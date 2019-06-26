@@ -61,7 +61,7 @@ func newArtClient(ctx context.Context, torProxy string, endpoint string) (artCli
 }
 
 func (client *Client) GetAllArtByTor() (*art.ArtReply, error) {
-	const logPrefix = "client GetAllArt "
+	const logPrefix = "client GetAllArtByTor "
 	fmt.Printf(logPrefix+"with torClient proxy %v to http://%v\n", client.torProxy, client.peerAddress)
 	response, err := client.torClient.Get("http://" + client.peerAddress)
 	if err != nil {

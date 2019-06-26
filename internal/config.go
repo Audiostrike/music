@@ -14,7 +14,7 @@ const (
 	defaultDbName       = "music"
 	defaultDbUser       = "audiostrike"
 	defaultDbPassword   = "ChangeThisToThePasswordForYourDbUser"
-	defaultRESTHost = "localhost"
+	defaultRESTHost     = "localhost"
 	defaultRESTPort     = 53545 // 0xd129 from Unicode symbol 0x1d129 for multi-measure rest
 	defaultRPCPort      = 53308 // 0xd03c from Unicode symbol 0x1d03c for Byzantine musical symbol rapisma
 	defaultMp3DirName   = "mp3"
@@ -67,7 +67,7 @@ func defaultAppDir() string {
 	case "darwin": // MacOS
 		if homeDir != "" {
 			return filepath.Join(homeDir, "Library",
-				"Application Support", "Audiotrike")
+				"Application Support", "Audiostrike")
 		}
 
 	default:
