@@ -522,6 +522,7 @@ func (db *AustkDb) SelectTrack(artistID string, artistTrackID string) (track art
 		ArtistTrackId:    artistTrackID,
 		Title:            title,
 		ArtistAlbumId:    artistAlbumID,
-		AlbumTrackNumber: uint32(albumTrackNum)}
+		AlbumTrackNumber: uint32(albumTrackNum),
+	}
 	return
 }

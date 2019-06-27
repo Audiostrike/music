@@ -2,7 +2,6 @@ package main
 
 import (
 	"database/sql"
-	"flag"
 	"fmt"
 	"io/ioutil"
 	"log"
@@ -14,49 +13,14 @@ import (
 	"google.golang.org/grpc"
 )
 
-var (
-	artistId       string
-	initDb         bool
-	addMp3FileName string
-	playMp3        bool
-	runAsDaemon    bool
-	peerAddress    string
-	torProxy       string
-)
-
 func main() {
 	const logPrefix = "austk main "
 	cfg, err := audiostrike.LoadConfig()
 	if err != nil {
 		log.Fatalf(logPrefix+"LoadConfig error: %v", err)
 	}
-	var (
-		dbNameFlag      = flag.String("dbname", cfg.DbName, "mysql db name")
-		dbUserFlag      = flag.String("dbuser", cfg.DbUser, "mysql db username")
-		dbPasswordFlag  = flag.String("dbpass", cfg.DbPassword, "mysql db password")
-		initDbFlag      = flag.Bool("dbinit", false, "initialize the database (first use only)")
-		artistIdFlag    = flag.String("artist", cfg.ArtistId, "artist id for publishing tracks")
-		addMp3Flag      = flag.String("add", "", "mp3 file to add, e.g. -add=1.YourTrackToServe.mp3")
-		playMp3Flag     = flag.Bool("play", false, "play imported mp3 file (requires -file)")
-		runAsDaemonFlag = flag.Bool("daemon", false, "run as daemon until quit signal (e.g. SIGINT)")
-		peerFlag        = flag.String("peer", "", "audiostrike server peer to connect")
-		torProxyFlag    = flag.String("torproxy", cfg.TorProxy, "onion-routing proxy")
-	)
-	flag.Parse()
-	if *dbNameFlag != "" {
-		cfg.DbName = *dbNameFlag
-	}
-	cfg.DbUser = *dbUserFlag
-	cfg.DbPassword = *dbPasswordFlag
-	initDb = *initDbFlag
-	artistId = *artistIdFlag
-	addMp3FileName = *addMp3Flag
-	playMp3 = *playMp3Flag
-	peerAddress = *peerFlag
-	runAsDaemon = *runAsDaemonFlag
-	torProxy = *torProxyFlag
 
-	if initDb {
+	if cfg.InitDb {
 		err := audiostrike.InitializeDb(cfg.DbName, cfg.DbUser, cfg.DbPassword)
 		if err != nil {
 			log.Fatalf(logPrefix+"InitializeDb error: %v", err)
@@ -68,39 +32,56 @@ func main() {
 		log.Fatalf(logPrefix+"Failed to open database, error: %v", err)
 	}
 
-	if addMp3FileName != "" {
-		mp3, err := addMp3File(addMp3FileName, db)
+	if cfg.AddMp3FileName != "" {
+		mp3, err := addMp3File(cfg.AddMp3FileName, db)
 		if err != nil {
 			log.Fatalf(logPrefix+"addMp3File error: %v", err)
 		}
-		fmt.Printf(logPrefix+"addMp3File %s ok\n", addMp3FileName)
+		fmt.Printf(logPrefix+"addMp3File %s ok\n", cfg.AddMp3FileName)
 
-		if playMp3 {
+		if cfg.PlayMp3 {
 			mp3.PlayAndWait()
 		}
 	}
 
-	if peerAddress != "" {
-		client, err := audiostrike.NewClient(torProxy, peerAddress)
+	if cfg.PeerAddress != "" {
+		client, err := audiostrike.NewClient(cfg.TorProxy, cfg.PeerAddress)
 		if err != nil {
 			log.Fatalf(logPrefix+"NewClient via torProxy %v to peerAddress %v, error: %v",
-				torProxy, peerAddress, err)
+				cfg.TorProxy, cfg.PeerAddress, err)
 		}
 		defer client.CloseConnection()
 		reply, err := client.GetAllArtByTor() //GetAllArtByGrpc()
 		if err != nil {
-			log.Fatalf(logPrefix+"GetAllArt from %v error: %v", peerAddress, err)
+			log.Fatalf(logPrefix+"GetAllArt from %v error: %v", cfg.PeerAddress, err)
 		}
-		fmt.Printf("Received reply: %v", reply)
+		fmt.Printf("Received reply: %v\n", reply)
 		err = importArtReply(reply, db, client)
 		if err != nil {
 			log.Fatalf(logPrefix+"importArtReply error: %v", err)
 		}
+
+		if cfg.PlayMp3 {
+			err = downloadTracks(reply.Tracks, db, client)
+			if err != nil {
+				log.Fatalf(logPrefix+"downloadTracks error: %v", err)
+			}
+			for _, track := range reply.Tracks {
+				mp3FileName := buildFileName(track)
+				mp3, err := audiostrike.OpenMp3ToRead(mp3FileName)
+				if err != nil {
+					log.Fatalf(logPrefix+"OpenMp3ToRead %v, error: %v", mp3FileName, err)
+				}
+				mp3.PlayAndWait()
+			}
+		}
 	}
 
-	if runAsDaemon {
+	// TODO: sync with each peer from DB
+
+	if cfg.RunAsDaemon {
 		fmt.Println(logPrefix + "Starting Audiostrike server...")
-		server, err := startServer(artistId, db)
+		server, err := startServer(cfg.ArtistId, db)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
@@ -131,79 +112,87 @@ func importArtReply(artReply *art.ArtReply, db *audiostrike.AustkDb, client *aud
 			errors = append(errors, err)
 			continue
 		}
-
-		if playMp3 {
-			var peer *art.Peer
-			trackArtist, err := db.SelectArtist(track.ArtistId)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, logPrefix+"db.SelectArtist error: %v\n", err)
-				errors = append(errors, err)
-				continue
-			}
-			for i := range artReply.Peers {
-				fmt.Printf(logPrefix+"compare peer %v with track artist pubkey %v\n",
-					artReply.Peers[i].Pubkey, trackArtist.Pubkey)
-				if artReply.Peers[i].Pubkey == trackArtist.Pubkey {
-					peer = artReply.Peers[i]
-					fmt.Printf(logPrefix+
-						"Peer %v with pubkey %v matches artist %v\n",
-						peer.Host, peer.Pubkey, trackArtist.ArtistId)
-					break
-				}
-			}
-			if peer == nil {
-				errors = append(errors,
-					fmt.Errorf("no peer owns remote .mp3 %s/%s",
-						track.ArtistId, track.ArtistTrackId))
-				continue
-			}
-			// TODO: sanitize filepath so peer cannot write outside ./tracks/ dir sandbox.
-			filename := fmt.Sprintf("./tracks/%s/%s", track.ArtistId, track.ArtistTrackId)
-			replyBytes, err := client.GetArtByTor(track.ArtistId, track.ArtistTrackId)
-			if err != nil {
-				fmt.Fprintf(os.Stderr,
-					logPrefix+"GetArtByTor %v/%v, error: %v\n",
-					track.ArtistId, track.ArtistTrackId, err)
-				errors = append(errors, err)
-				continue
-			}
-			dirname := fmt.Sprintf("./tracks")
-			err = os.Mkdir(dirname, 0777)
-			if err != nil {
-				fmt.Fprintf(os.Stderr,
-					logPrefix+"Mkdir ./tracks error: %v\n", err)
-			}
-			dirname = fmt.Sprintf("./tracks/%s", track.ArtistId)
-			err = os.Mkdir(dirname, 0777)
-			if err != nil {
-				fmt.Fprintf(os.Stderr,
-					logPrefix+"Mkdir ./tracks/%s error: %v\n",
-					track.ArtistId, err)
-			}
-			if track.ArtistAlbumId != "" {
-				dirname = fmt.Sprintf("./tracks/%s/%s", track.ArtistId, track.ArtistAlbumId)
-				err = os.Mkdir(dirname, 0777)
-				if err != nil {
-					fmt.Fprintf(os.Stderr,
-						logPrefix+"Mkdir ./tracks/%s/%s error: %v\n",
-						track.ArtistId, track.ArtistAlbumId, err)
-				}
-			}
-			err = ioutil.WriteFile(filename, replyBytes, 0644)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, logPrefix+"WriteFile error: %v\n", err)
-				errors = append(errors, err)
-				continue
-			}
-			// TODO: play the .mp3 file
-			errors = append(errors, fmt.Errorf("not yet implemented to play remote .mp3 file"))
-		}
 	}
 	if len(errors) > 0 {
 		// return the first error
 		err = errors[0]
 	}
 	return
+}
+
+func downloadTracks(tracks []*art.Track, db *audiostrike.AustkDb, client *audiostrike.Client) (err error) {
+	const logPrefix = "austk importArtReply "
+	var errors []error
+	for _, track := range tracks {
+		trackArtist, err := db.SelectArtist(track.ArtistId)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, logPrefix+"db.SelectArtist error: %v\n", err)
+			errors = append(errors, err)
+			continue
+		}
+		
+		peer, err := db.SelectPeer(trackArtist.Pubkey)
+		if peer == nil {
+			errors = append(errors,
+				fmt.Errorf("no peer owns remote .mp3 %s/%s",
+					track.ArtistId, track.ArtistTrackId))
+			continue
+		}
+		
+		// TODO: sanitize filepath so peer cannot write outside ./tracks/ dir sandbox.
+		filename := buildFileName(track)
+		replyBytes, err := client.GetArtByTor(track.ArtistId, track.ArtistTrackId)
+		if err != nil {
+			fmt.Fprintf(os.Stderr,
+				logPrefix+"GetArtByTor %v/%v, error: %v\n",
+				track.ArtistId, track.ArtistTrackId, err)
+			errors = append(errors, err)
+			continue
+		}
+		
+		dirname := fmt.Sprintf("./tracks")
+		err = os.Mkdir(dirname, 0777)
+		if err != nil {
+			fmt.Fprintf(os.Stderr,
+				logPrefix+"Mkdir ./tracks error: %v\n", err)
+		}
+		
+		dirname = fmt.Sprintf("./tracks/%s", track.ArtistId)
+		err = os.Mkdir(dirname, 0777)
+		if err != nil {
+			fmt.Fprintf(os.Stderr,
+				logPrefix+"Mkdir ./tracks/%s error: %v\n",
+				track.ArtistId, err)
+		}
+		
+		if track.ArtistAlbumId != "" {
+			dirname = fmt.Sprintf("./tracks/%s/%s", track.ArtistId, track.ArtistAlbumId)
+			err = os.Mkdir(dirname, 0777)
+			if err != nil {
+				fmt.Fprintf(os.Stderr,
+					logPrefix+"Mkdir ./tracks/%s/%s error: %v\n",
+					track.ArtistId, track.ArtistAlbumId, err)
+			}
+		}
+
+		err = ioutil.WriteFile(filename, replyBytes, 0644)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, logPrefix+"WriteFile error: %v\n", err)
+			errors = append(errors, err)
+			continue
+		}
+		
+		errors = append(errors, fmt.Errorf("not yet implemented to play remote .mp3 file"))
+	}
+	if len(errors) > 0 {
+		// return the first error
+		err = errors[0]
+	}
+	return
+}
+
+func buildFileName(track *art.Track) (filename string) {
+	return fmt.Sprintf("./tracks/%s/%s", track.ArtistId, track.ArtistTrackId)
 }
 
 func addMp3File(addMp3FileName string, db *audiostrike.AustkDb) (mp3 *audiostrike.Mp3, err error) {
@@ -215,6 +204,7 @@ func addMp3File(addMp3FileName string, db *audiostrike.AustkDb) (mp3 *audiostrik
 
 	artistName := mp3.ArtistName()
 	artistID := nameToId(artistName)
+	
 	var artistPubkey string
 	dbArtist, err := db.SelectArtist(artistID)
 	if err == sql.ErrNoRows {
@@ -224,10 +214,14 @@ func addMp3File(addMp3FileName string, db *audiostrike.AustkDb) (mp3 *audiostrik
 	} else {
 		artistPubkey = dbArtist.Pubkey
 	}
+	
 	trackTitle := mp3.Title()
+	
 	albumTitle, isInAlbum := mp3.AlbumTitle()
+
 	fmt.Printf(logPrefix+"file: %v\n\tTitle: %v\n\tArtist: %v\n\tAlbum: %v\n\tTags: %v\n",
 		addMp3FileName, trackTitle, artistName, albumTitle, mp3.Tags)
+
 	err = db.PutArtist(&art.Artist{
 		ArtistId: artistID,
 		Name:     artistName,
@@ -252,6 +246,7 @@ func addMp3File(addMp3FileName string, db *audiostrike.AustkDb) (mp3 *audiostrik
 		artistAlbumID = ""
 		artistTrackID = trackTitleID
 	}
+	
 	_, err = db.PutTrack(art.Track{
 		ArtistId:      artistID,
 		ArtistTrackId: artistTrackID,
