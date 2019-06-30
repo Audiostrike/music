@@ -1,0 +1,49 @@
+syntax = "proto3";
+
+package net.audiostrike.art;
+
+service Art {
+  rpc GetArt (ArtRequest) returns (ArtReply) {}
+}
+
+message ArtRequest {
+  string artist_id = 1; // If specified, only get art for this artist.
+  string artist_track_id = 2; // If specified, only get this track.
+  uint64 since = 3; // If specified, only get art changed since this Unix date.
+  // Maybe implement filters, e.g.
+  //string filter = 4; // If specified, only get art matching this filter, e.g. "satperhour<100"
+}
+
+message ArtReply {
+  repeated Artist artists = 1;
+  repeated Album albums = 2;
+  repeated Track tracks = 3;
+  repeated Peer peers = 4;
+}
+
+message Artist {
+  string artist_id = 1; // Lowercase id, no spaces, no punctuation, e.g. "aliceinchains"
+  string name = 2; // Full name with proper casing, space, and punctuation, e.g. "Alice in Chains"
+  string pubkey = 3; // Public key used to sign tracks and receive payment for music streaming/downloads.
+}
+
+message Album {
+  string artist_id = 1;
+  string artist_album_id = 2; // Lowercase id, no spaces, no punctuation, unique for artist_id, e.g. "dirt"
+  string title = 3; // Full title with proper casing, spaces, and punctuation, e.g. "Dirt"
+  repeated string artist_track_id = 4;
+}
+
+message Track {
+  string artist_id = 1;
+  string artist_album_id = 2;
+  string artist_track_id = 3; // Lowercase id, no spaces, no punctuation, unique for artist_id+artist_album_id, e.g. "would"
+  uint32 album_track_number = 4; // Position of the track on the album, if any, e.g. 1
+  string title = 5; // Full title, e.g. "Would?"
+}
+
+message Peer {
+  string pubkey = 1; // E.g. 036f709187264df770bd453270a95b579595a42cd89eab2ea437dfd537048a7250
+  string host = 2; // ip or onion address of the host, e.g. 27oxo32rz47oiokfmlnt6ig7qmp6xtq7hgbq67pypfonxs7ubvsualid.onion
+  uint32 port = 3; // tcp port for Audiostrike service, e.g. 53545
+}
