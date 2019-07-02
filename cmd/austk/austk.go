@@ -1,11 +1,8 @@
 package main
 
 import (
-	"database/sql"
 	"fmt"
-	"io/ioutil"
 	"log"
-	"os"
 	"strings"
 
 	audiostrike "github.com/audiostrike/music/internal"
@@ -13,8 +10,38 @@ import (
 	"google.golang.org/grpc"
 )
 
+// main runs austk with config from command line, austk.config file, or defaults. `-help` for help:
+//
+//     go/src/github.com/audiostrike/music$ ./austk -help
+//
+// Setup your computer to run `austk` and serve music with the steps at
+// https://github.com/audiostrike/music/wiki/austk-node-setup
+// bitcoind may take several days for initial block download to sync to bitcoin mainnet blockchain.
+//
+// Use `-artist {id}` to set the id as a simple lower-case name, no spaces or punctuation:
+//
+//     go/src/github.com/audiostrike/music$ ./austk -artist aliceinchains
+//
+// The node setup steps create a mysql db user for `austk` to use.
+// Specify that mysql db user with `-dbuser` and the password with `-dbpass`:
+//
+// On first run, also initialize the database with `-dbinit`:
+//
+//     go/src/github.com/audiostrike/music$ ./austk -artist aliceinchains -dbuser examplemysqlusername -dbpass 3x4mpl3mysqlp455w0rd -dbinit
+//
+// Add mp3 files to the art directory with `-add {filepath}`:
+//
+//     go/src/github.com/audiostrike/music$ ./austk -artist aliceinchains -add /media/recordings/dirt/would.mp3
+//
+// To serve added tracks, run as a daemon with the `-daemon` flag.
+// Publish your austk node's tor address with `-host {address}`.
+// Connect securely with your `lnd` through `-macaroon` and `-tlscert`.
+//
+//     go/src/github.com/audiostrike/music$ ./austk -artist aliceinchains -dbuser examplemysqlusername -dbpass 3x4mpl3mysqlp455w0rd -macaroon ~/.lnd/data/chain/bitcoin/mainnet/admin.macaroon -tlscert ~/.lnd/tls.cert -host 45o4k7vt75tgh4zwbkxl5ec6ccagaulr273piugh3tt2cfmcawzeiwqd.onion -daemon
+//
 func main() {
 	const logPrefix = "austk main "
+
 	cfg, err := audiostrike.LoadConfig()
 	if err != nil {
 		log.Fatalf(logPrefix+"LoadConfig error: %v", err)
@@ -32,12 +59,12 @@ func main() {
 		log.Fatalf(logPrefix+"Failed to open database, error: %v", err)
 	}
 
-	if cfg.AddMp3FileName != "" {
-		mp3, err := addMp3File(cfg.AddMp3FileName, db)
+	if cfg.AddMp3Filename != "" {
+		mp3, err := addMp3File(cfg.AddMp3Filename, db)
 		if err != nil {
 			log.Fatalf(logPrefix+"addMp3File error: %v", err)
 		}
-		fmt.Printf(logPrefix+"addMp3File %s ok\n", cfg.AddMp3FileName)
+		log.Printf(logPrefix+"addMp3File %s ok", cfg.AddMp3Filename)
 
 		if cfg.PlayMp3 {
 			mp3.PlayAndWait()
@@ -51,40 +78,28 @@ func main() {
 				cfg.TorProxy, cfg.PeerAddress, err)
 		}
 		defer client.CloseConnection()
-		reply, err := client.GetAllArtByTor() //GetAllArtByGrpc()
+
+		tracks, err := client.SyncFromPeer(db)
 		if err != nil {
-			log.Fatalf(logPrefix+"GetAllArt from %v error: %v", cfg.PeerAddress, err)
-		}
-		fmt.Printf("Received reply: %v\n", reply)
-		err = importArtReply(reply, db, client)
-		if err != nil {
-			log.Fatalf(logPrefix+"importArtReply error: %v", err)
+			log.Fatalf(logPrefix+"SyncFromPeer error: %v", err)
 		}
 
 		if cfg.PlayMp3 {
-			err = downloadTracks(reply.Tracks, db, client)
+			err = client.DownloadTracks(tracks, db)
 			if err != nil {
-				log.Fatalf(logPrefix+"downloadTracks error: %v", err)
+				log.Fatalf(logPrefix+"DownloadTracks error: %v", err)
 			}
-			for _, track := range reply.Tracks {
-				mp3FileName := buildFileName(track)
-				mp3, err := audiostrike.OpenMp3ToRead(mp3FileName)
-				if err != nil {
-					log.Fatalf(logPrefix+"OpenMp3ToRead %v, error: %v", mp3FileName, err)
-				}
-				mp3.PlayAndWait()
-			}
+			err = playTracks(tracks)
 		}
 	}
 
 	// TODO: sync with each peer from DB
 
 	if cfg.RunAsDaemon {
-		fmt.Println(logPrefix + "Starting Audiostrike server...")
+		log.Println(logPrefix + "Starting Audiostrike server...")
 		server, err := startServer(cfg.ArtistId, db)
 		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
+			log.Fatalf(logPrefix+"startServer daemon error: %v", err)
 		}
 		defer server.Stop()
 
@@ -93,147 +108,44 @@ func main() {
 	}
 }
 
-func importArtReply(artReply *art.ArtReply, db *audiostrike.AustkDb, client *audiostrike.Client) (err error) {
-	const logPrefix = "austk importArtReply "
-	var errors []error
-	artists := make(map[string]art.Artist)
-	for _, artist := range artReply.Artists {
-		artists[artist.ArtistId] = *artist
-		err = db.PutArtist(artist)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, logPrefix+"db.PutArtist error: %v\n", err)
-			errors = append(errors, err)
-		}
-	}
-	for _, track := range artReply.Tracks {
-		_, err = db.PutTrack(*track)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, logPrefix+"db.PutTrack error: %v\n", err)
-			errors = append(errors, err)
-			continue
-		}
-	}
-	if len(errors) > 0 {
-		// return the first error
-		err = errors[0]
-	}
-	return
-}
+// playTracks opens the mp3 files of the given tracks, plays each in series, and waits for playback to finish.
+// It is used to test mp3 files added for the artist or downloaded from other artists.
+func playTracks(tracks []*art.Track) error {
+	const logPrefix = "client playTracks "
 
-func downloadTracks(tracks []*art.Track, db *audiostrike.AustkDb, client *audiostrike.Client) (err error) {
-	const logPrefix = "austk importArtReply "
-	var errors []error
 	for _, track := range tracks {
-		trackArtist, err := db.SelectArtist(track.ArtistId)
+		mp3, err := audiostrike.OpenMp3ForTrackToRead(track.ArtistId, track.ArtistTrackId)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, logPrefix+"db.SelectArtist error: %v\n", err)
-			errors = append(errors, err)
-			continue
+			log.Fatalf(logPrefix+"OpenMp3ToRead %v, error: %v", track, err)
+			return err
 		}
-		
-		peer, err := db.SelectPeer(trackArtist.Pubkey)
-		if peer == nil {
-			errors = append(errors,
-				fmt.Errorf("no peer owns remote .mp3 %s/%s",
-					track.ArtistId, track.ArtistTrackId))
-			continue
-		}
-		
-		// TODO: sanitize filepath so peer cannot write outside ./tracks/ dir sandbox.
-		filename := buildFileName(track)
-		replyBytes, err := client.GetArtByTor(track.ArtistId, track.ArtistTrackId)
-		if err != nil {
-			fmt.Fprintf(os.Stderr,
-				logPrefix+"GetArtByTor %v/%v, error: %v\n",
-				track.ArtistId, track.ArtistTrackId, err)
-			errors = append(errors, err)
-			continue
-		}
-		
-		dirname := fmt.Sprintf("./tracks")
-		err = os.Mkdir(dirname, 0777)
-		if err != nil {
-			fmt.Fprintf(os.Stderr,
-				logPrefix+"Mkdir ./tracks error: %v\n", err)
-		}
-		
-		dirname = fmt.Sprintf("./tracks/%s", track.ArtistId)
-		err = os.Mkdir(dirname, 0777)
-		if err != nil {
-			fmt.Fprintf(os.Stderr,
-				logPrefix+"Mkdir ./tracks/%s error: %v\n",
-				track.ArtistId, err)
-		}
-		
-		if track.ArtistAlbumId != "" {
-			dirname = fmt.Sprintf("./tracks/%s/%s", track.ArtistId, track.ArtistAlbumId)
-			err = os.Mkdir(dirname, 0777)
-			if err != nil {
-				fmt.Fprintf(os.Stderr,
-					logPrefix+"Mkdir ./tracks/%s/%s error: %v\n",
-					track.ArtistId, track.ArtistAlbumId, err)
-			}
-		}
-
-		err = ioutil.WriteFile(filename, replyBytes, 0644)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, logPrefix+"WriteFile error: %v\n", err)
-			errors = append(errors, err)
-			continue
-		}
-		
-		errors = append(errors, fmt.Errorf("not yet implemented to play remote .mp3 file"))
+		mp3.PlayAndWait()
 	}
-	if len(errors) > 0 {
-		// return the first error
-		err = errors[0]
-	}
-	return
+	return nil
 }
 
-func buildFileName(track *art.Track) (filename string) {
-	return fmt.Sprintf("./tracks/%s/%s", track.ArtistId, track.ArtistTrackId)
-}
+// addMp3File reads mp3 tags from the file named filename
+// and puts a db record for the track, for the artist, and for the album if relevant.
+// This lets the austk node host the mp3 track for the artist and collect payments to download/stream it.
+func addMp3File(filename string, db *audiostrike.AustkDb) (*audiostrike.Mp3, error) {
+	const logPrefix = "austk addMp3File "
 
-func addMp3File(addMp3FileName string, db *audiostrike.AustkDb) (mp3 *audiostrike.Mp3, err error) {
-	const logPrefix = "austk importMp3File "
-	mp3, err = audiostrike.OpenMp3ToRead(addMp3FileName)
+	mp3, err := audiostrike.OpenMp3ToRead(filename)
 	if err != nil {
-		return
+		return nil, err
 	}
 
 	artistName := mp3.ArtistName()
 	artistID := nameToId(artistName)
-	
-	var artistPubkey string
-	dbArtist, err := db.SelectArtist(artistID)
-	if err == sql.ErrNoRows {
-		artistPubkey = ""
-	} else if err != nil {
-		return
-	} else {
-		artistPubkey = dbArtist.Pubkey
-	}
-	
-	trackTitle := mp3.Title()
-	
-	albumTitle, isInAlbum := mp3.AlbumTitle()
-
-	fmt.Printf(logPrefix+"file: %v\n\tTitle: %v\n\tArtist: %v\n\tAlbum: %v\n\tTags: %v\n",
-		addMp3FileName, trackTitle, artistName, albumTitle, mp3.Tags)
-
-	err = db.PutArtist(&art.Artist{
-		ArtistId: artistID,
-		Name:     artistName,
-		Pubkey:   artistPubkey,
-	})
-	if err != nil {
-		return
-	}
 
 	var artistTrackID string
+	trackTitle := mp3.Title()
+
+	albumTitle, isInAlbum := mp3.AlbumTitle()
 	var artistAlbumID string
 	trackTitleID := nameToId(trackTitle)
+	log.Printf(logPrefix+"file: %v\n\tTitle: %v\n\tArtist: %v\n\tAlbum: %v\n\tTags: %v",
+		filename, trackTitle, artistName, albumTitle, mp3.Tags)
 	if isInAlbum {
 		artistAlbumID = nameToId(albumTitle)
 		err = db.PutAlbum(art.Album{
@@ -246,48 +158,55 @@ func addMp3File(addMp3FileName string, db *audiostrike.AustkDb) (mp3 *audiostrik
 		artistAlbumID = ""
 		artistTrackID = trackTitleID
 	}
-	
-	_, err = db.PutTrack(art.Track{
+
+	artist := &art.Artist{
+		ArtistId: artistID,
+		Name:     artistName,
+	}
+	track := &art.Track{
 		ArtistId:      artistID,
 		ArtistTrackId: artistTrackID,
 		Title:         trackTitle,
 		ArtistAlbumId: artistAlbumID,
-	})
-	return
+	}
+	err = db.PutTrackForArtist(artist, track)
+	return mp3, err
 }
 
+// nameToId converts the name or title of an artist, album, or track
+// into a case-insensitive id usable for urls, filenames, etc.
 func nameToId(name string) string {
 	// TODO: strip other whitespace, punctuation, etc.
 	return strings.ToLower(strings.ReplaceAll(name, " ", ""))
 }
 
+// startServer sets the configured artist to use the lnd server and starts running as a daemon
+// until SIGINT (ctrl-c or `kill`) is received.
 func startServer(artistID string, db *audiostrike.AustkDb) (s *audiostrike.ArtServer, err error) {
 	const logPrefix = "austk startServer "
-	opts := [...]grpc.ServerOption{}
 
+	opts := [...]grpc.ServerOption{}
 	s, err = audiostrike.NewServer(opts[:])
 	if err != nil {
-		fmt.Fprintf(os.Stderr, logPrefix+"NewServer error: %v\n", err)
+		log.Printf(logPrefix+"NewServer error: %v", err)
 		return
 	}
-	fmt.Printf(logPrefix+"select artist %v\n", artistID)
-	artist, err := db.SelectArtist(artistID)
+
+	// Set the pubkey for artistID to this server's pubkey (from lnd).
+	pubkey, err := s.Pubkey()
 	if err != nil {
+		log.Printf(logPrefix+"s.Pubkey error: %v", err)
 		return
 	}
-	artist.Pubkey, err = s.Pubkey()
+	err = db.UpdateArtistPubkey(artistID, pubkey)
 	if err != nil {
+		log.Printf(logPrefix+"db.SetPubkeyForArtist %v, error: %v", artistID, err)
 		return
 	}
-	err = db.PutArtist(artist)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, logPrefix+"PutArtist Pubkey %v, error: %v\n", artist.Pubkey, err)
-		return
-	}
-	fmt.Printf(logPrefix+"PutArtist Pubkey %v ok\n", artist.Pubkey)
+
 	err = s.Start(db)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, logPrefix+"Start error: %v\n", err)
+		log.Printf(logPrefix+"Start error: %v", err)
 	}
 	return
 }

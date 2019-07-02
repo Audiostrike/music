@@ -51,6 +51,18 @@ func OpenMp3ToRead(fileName string) (mp3 *Mp3, err error) {
 	return
 }
 
+func OpenMp3ForTrackToRead(artistId string, artistTrackId string) (mp3 *Mp3, err error) {
+	fileName := buildFileName(artistId, artistTrackId)
+	mp3, err = OpenMp3ToRead(fileName)
+	return
+}
+
+func buildFileName(artistId string, artistTrackId string) (filename string) {
+	// TODO: make base path configurable, defaulting to ./tracks/
+	// TODO: sanitize filepath so peer cannot write outside the base path dir sandbox.
+	return fmt.Sprintf("./tracks/%s/%s", artistId, artistTrackId)
+}
+
 func parseTags(file *mikkyangid3.File) (map[string]string, error) {
 	tags := map[string]string{
 		"Artist": file.Artist(),
