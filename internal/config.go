@@ -1,10 +1,8 @@
 package audiostrike
 
 import (
-	//    "fmt"
 	"net"
 	"os"
-	//    "path"
 	"flag"
 	"os/user"
 	"path/filepath"
@@ -34,7 +32,9 @@ var (
 	defaultMp3Dir = filepath.Join(defaultDir, defaultMp3DirName)
 )
 
-// Config for art server
+// Config for art server.
+// These settings are specified in defaults, a config file, or the command line.
+// (Config file not yet implemented)
 type Config struct {
 	ArtistId       string
 	DbName         string

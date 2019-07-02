@@ -454,6 +454,7 @@ func (db *AustkDb) PutArtist(artist *art.Artist) error {
 // can confidently pay this artist's austk node for the tracks
 // if the fan knows that the artist owns that pubkey.
 //
+// This INSERTs the artist if artistID is not yet in the artist db table.
 // If the artist already is in the db, PutArtist UPDATEs the record.
 // Otherwise, this throws an error that the artist is not found in the db.
 func (db *AustkDb) UpdateArtistPubkey(artistID string, pubkey string) error {
@@ -474,7 +475,7 @@ func (db *AustkDb) UpdateArtistPubkey(artistID string, pubkey string) error {
 	return err
 }
 
-// PutAlbum inserts or updates the specified album using its artist_id and artist_album_id as the unique key
+// PutAlbum INSERTs or UPDATEs the specified album using its artist_id and artist_album_id as the unique key
 func (db *AustkDb) PutAlbum(album art.Album) (err error) {
 	_, err = db.SelectAlbum(album.ArtistId, album.ArtistAlbumId)
 	if err == sql.ErrNoRows {
@@ -492,7 +493,9 @@ func (db *AustkDb) PutAlbum(album art.Album) (err error) {
 	return
 }
 
-func (db *AustkDb) PutTrackForArtist(artist *art.Artist, track *art.Track) error {
+// AddArtistAndTrack puts the db records for the given artist and track.
+// It preserves any existing artist record's pubkey, failing if the new artist pubkey is different.
+func (db *AustkDb) AddArtistAndTrack(artist *art.Artist, track *art.Track) error {
 	const logPrefix = "db PutTrackForArtist "
 
 	dbArtist, err := db.SelectArtist(artist.ArtistId)
@@ -550,7 +553,8 @@ func (db *AustkDb) PutTrack(track *art.Track) (err error) {
 	return nil
 }
 
-// DeleteAlbum deletes the tracks and album with the specified artistID and albumID from the track and album tables.
+// DeleteAlbum DELETEs the tracks and album with the specified artistID and albumID
+// from the track and album tables.
 func (db *AustkDb) DeleteAlbum(artistID string, albumID string) error {
 	// TODO: check whether request is authorized to delete existing track.
 	// Each request can carry an auth token signed by the artist whose

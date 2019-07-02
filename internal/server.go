@@ -18,6 +18,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"gopkg.in/macaroon.v2"
+	"log"
 )
 
 var (
@@ -45,19 +46,19 @@ func NewServer(serverOpts []grpc.ServerOption) (*ArtServer, error) {
 	serverNameOverride := ""
 	tlsCreds, err := credentials.NewClientTLSFromFile(*certFilePath, serverNameOverride)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, logPrefix+"lnd credentials NewClientTLSFromFile error: %v\n", err)
+		log.Printf(logPrefix+"lnd credentials NewClientTLSFromFile error: %v", err)
 		return nil, err
 	}
 
 	macaroonData, err := ioutil.ReadFile(*macaroonFilePath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, logPrefix+"ReadFile macaroon %v error %v\n", *macaroonFilePath, err)
+		log.Printf(logPrefix+"ReadFile macaroon %v error %v\n", *macaroonFilePath, err)
 		return nil, err
 	}
 	mac := &macaroon.Macaroon{}
 	err = mac.UnmarshalBinary(macaroonData)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, logPrefix+"UnmarchalBinary macaroon error: %v\n", err)
+		log.Printf(logPrefix+"UnmarchalBinary macaroon error: %v\n", err)
 		return nil, err
 	}
 
@@ -68,26 +69,23 @@ func NewServer(serverOpts []grpc.ServerOption) (*ArtServer, error) {
 	}
 
 	lndGrpcEndpoint := fmt.Sprintf("%v:%d", *lndHost, *lndGrpcPort)
-	fmt.Printf(logPrefix+"Dial lnd grpc at %v...", lndGrpcEndpoint)
+	log.Printf(logPrefix+"Dial lnd grpc at %v...", lndGrpcEndpoint)
 	lndConn, err := grpc.Dial(lndGrpcEndpoint, lndOpts...)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, logPrefix+"Dial lnd error: %v\n", err)
+		log.Printf(logPrefix+"Dial lnd error: %v", err)
 		return nil, err
 	}
-	fmt.Println(".")
-	fmt.Print(logPrefix + "NewLightningClient...")
 	lndClient := lnrpc.NewLightningClient(lndConn)
-	fmt.Println(".")
 
 	ctx := context.Background()
 	var signMessageInput lnrpc.SignMessageRequest
 	signMessageInput.Msg = []byte("Test message")
 	signMessageResult, err := lndClient.SignMessage(ctx, &signMessageInput)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, logPrefix+"SignMessage test error: %v\n", err)
+		log.Printf(logPrefix+"SignMessage test error: %v", err)
 		return nil, err
 	}
-	fmt.Printf(logPrefix+"Signed test message, signature: %v\n", signMessageResult.Signature)
+	log.Printf(logPrefix+"Signed test message, signature: %v", signMessageResult.Signature)
 
 	s := &ArtServer{
 		//grpcServer: grpc.NewServer(serverOpts...),
@@ -104,49 +102,55 @@ func NewServer(serverOpts []grpc.ServerOption) (*ArtServer, error) {
 // Start the ArtServer listening for REST requests for artists in the db.
 func (s *ArtServer) Start(db *AustkDb) (err error) {
 	const logPrefix = "server Start "
+	
 	s.artDb = db
 	var artists map[string]art.Artist
 	var tracks map[string]art.Track
 	artists, err = db.SelectAllArtists()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, logPrefix+"db.SelectAllArtists error: %v\n", err)
+		log.Printf(logPrefix+"db.SelectAllArtists error: %v", err)
 		return
 	}
-	fmt.Printf(logPrefix+"%v artists:\n", len(artists))
+	log.Printf(logPrefix+"%v artists:", len(artists))
 	for artistID, artist := range artists {
-		fmt.Printf("\tArtist id %s: %v\n", artistID, artist)
+		log.Printf(logPrefix+"\tArtist id %s: %v", artistID, artist)
 		tracks, err = db.SelectArtistTracks(artistID)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, logPrefix+"db.SelectArtistTracks error: %v\n", err)
+			log.Printf(logPrefix+"db.SelectArtistTracks error: %v", err)
 			return
 		}
 		for trackID, track := range tracks {
-			fmt.Printf("\t\tTrack id: %s: %v\n", trackID, track)
+			log.Printf("\t\tTrack id: %s: %v", trackID, track)
 		}
 	}
 
 	pubkey, err := s.Pubkey()
+	if err != nil {
+		log.Printf(logPrefix+"Pubkey retrieval error: %v", err)
+		return
+	}
+	
 	selfPeer, err := db.SelectPeer(pubkey)
 	if err == sql.ErrNoRows {
-		fmt.Printf(logPrefix+"Inserting peer %v:%v for %v\n", *restHost, *restPort, pubkey)
+		log.Printf(logPrefix+"Inserting peer %v:%v for %v", *restHost, *restPort, pubkey)
 		err = db.PutPeer(&art.Peer{Pubkey: pubkey, Host: *restHost, Port: uint32(*restPort)})
 	} else if err != nil {
-		fmt.Fprintf(os.Stderr, logPrefix+"SelectPeer %v error: %v\n", pubkey, err)
+		log.Printf(logPrefix+"SelectPeer %v error: %v", pubkey, err)
 		return
 	} else {
-		fmt.Printf(logPrefix+"Updating peer %v:%v to %v:%v\n",
+		log.Printf(logPrefix+"Updating peer %v:%v to %v:%v",
 			selfPeer.Host, selfPeer.Port,
 			*restHost, *restPort)
 		err = db.PutPeer(&art.Peer{Pubkey: pubkey, Host: *restHost, Port: uint32(*restPort)})
 	}
 	if err != nil {
-		fmt.Fprintf(os.Stderr, logPrefix+"PutPeer %v error: %v\n", pubkey, err)
+		log.Printf(logPrefix+"PutPeer %v error: %v", pubkey, err)
 		return
 	}
 
 	// Listen for REST requests and serve in another thread.
 	go s.serve()
-	fmt.Printf(logPrefix+"serving REST requests on :%d\n", *restPort)
+	log.Printf(logPrefix+"serving REST requests on :%d", *restPort)
 
 	return
 }
@@ -160,7 +164,7 @@ func (server *ArtServer) serve() (err error) {
 	restAddress := fmt.Sprintf(":%d", *restPort)
 	err = http.ListenAndServe(restAddress, httpRouter)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, logPrefix+"ListenAndServe error: %v\n", err)
+		log.Printf(logPrefix+"ListenAndServe error: %v", err)
 	}
 
 	return
@@ -175,38 +179,38 @@ func (server *ArtServer) getAllArtHandler(w http.ResponseWriter, req *http.Reque
 
 	artists, err := server.artDb.SelectAllArtists()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, logPrefix+"SelectAllArtists error: %v\n", err)
+		log.Printf(logPrefix+"SelectAllArtists error: %v", err)
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
 	artistArray := make([]*art.Artist, 0, len(artists))
 	trackArray := make([]*art.Track, 0)
-	fmt.Println(logPrefix + "Select all artists:")
+	log.Println(logPrefix + "Select all artists:")
 	for _, artist := range artists {
-		fmt.Printf("\tArtist: %v\n", artist)
+		log.Printf("\tArtist: %v", artist)
 		artistCopy := artist
 		artistArray = append(artistArray, &artistCopy)
 		tracks, err := server.artDb.SelectArtistTracks(artist.ArtistId)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, logPrefix+"SelectAllTracks error: %v\n", err)
+			log.Printf(logPrefix+"SelectAllTracks error: %v", err)
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 		for _, track := range tracks {
-			fmt.Printf("\tTrack: %v\n", track)
+			log.Printf("\tTrack: %v", track)
 			trackCopy := track
 			trackArray = append(trackArray, &trackCopy)
 		}
 	}
 	peers, err := server.artDb.SelectAllPeers()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, logPrefix+"SelectAllPeers error: %v\n", err)
+		log.Printf(logPrefix+"SelectAllPeers error: %v", err)
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
 	peerArray := make([]*art.Peer, 0, len(peers))
 	for _, peer := range peers {
-		fmt.Printf("\tPeer: %v\n", peer)
+		log.Printf("\tPeer: %v", peer)
 		peerCopy := *peer
 		peerArray = append(peerArray, &peerCopy)
 	}
@@ -215,6 +219,7 @@ func (server *ArtServer) getAllArtHandler(w http.ResponseWriter, req *http.Reque
 		Tracks:  trackArray,
 		Peers: peerArray,
 	}
+
 	ctx := context.Background()
 	var signMessageInput lnrpc.SignMessageRequest
 	data, err := proto.Marshal(&reply)
@@ -225,11 +230,11 @@ func (server *ArtServer) getAllArtHandler(w http.ResponseWriter, req *http.Reque
 	signMessageInput.Msg = []byte(data)
 	signMessageResult, err := server.lndClient.SignMessage(ctx, &signMessageInput)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, logPrefix+"SignMessage error: %v\n", err)
+		log.Printf(logPrefix+"SignMessage error: %v", err)
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
-	fmt.Printf(logPrefix+"Signed message %s, signature: %v\n", data, signMessageResult.Signature)
+	log.Printf(logPrefix+"Signed message %s, signature: %v", data, signMessageResult.Signature)
 	w.WriteHeader(http.StatusOK)
 	w.Write(data)
 }
@@ -276,7 +281,7 @@ func (server *ArtServer) putArtistHandler(w http.ResponseWriter, req *http.Reque
 	var artist art.Artist
 	err := decoder.Decode(&artist)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to decode artist from request, error: %v\n", err)
+		log.Printf("Failed to decode artist from request, error: %v", err)
 		w.WriteHeader(http.StatusBadRequest)
 		// Should intelligible peers be notified, muted, or disconnected?
 		return
@@ -289,44 +294,48 @@ func (server *ArtServer) putArtistHandler(w http.ResponseWriter, req *http.Reque
 	go func() {
 		err = server.artDb.PutArtist(&artist)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Failed to put artist into DB, error: %v\n", err)
+			log.Printf("Failed to put artist into DB, error: %v", err)
 		}
 	}()
 }
 
 func (server *ArtServer) getArtHandler(w http.ResponseWriter, req *http.Request) {
 	const logPrefix = "server getArtHandler "
+	
 	artistId := mux.Vars(req)["artist"]
 	trackId := mux.Vars(req)["track"]
 	if artistId == "" || trackId == "" {
-		fmt.Fprintf(os.Stderr, logPrefix+"expected artist and track but received artist: %s, track: %s\n", artistId, trackId)
+		log.Printf(logPrefix+"expected artist and track but received artist: %s, track: %s", artistId, trackId)
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
-	fmt.Printf(logPrefix+"artist: %v, track: %v\n", artistId, trackId)
+	log.Printf(logPrefix+"artist: %v, track: %v", artistId, trackId)
+	
 	_, err := server.artDb.SelectTrack(artistId, trackId)
 	if err != nil {
 		// TODO: if requested track isn't in the db, error with 404 Not Found
-		fmt.Fprintf(os.Stderr, logPrefix+"failed to select track, error: %v\n", err)
+		log.Printf(logPrefix+"failed to select track, error: %v", err)
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
+	
 	// TODO: to require payment, check for secret received in receipt for paying invoice
 	// If valid secret is not supplied, issue a Lightning invoice.
 	// For now, skip the payment mechanics and serve the requested resource immediately.
-	filename := fmt.Sprintf("./tracks/%s/%s", artistId, trackId)
-	trackData, err := ioutil.ReadFile(filename)
+	mp3, err := OpenMp3ForTrackToRead(artistId, trackId)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, logPrefix+"ReadFile %s error: %v\n", filename, err)
+		log.Printf(logPrefix+"OpenMp3ForTrackToRead %s %s, error: %v", artistId, trackId, err)
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
-	//data, err := json.Marshal(track)
-	fmt.Printf(logPrefix+"data: %s\n", string(trackData))
+	
+	trackData, err := mp3.ReadBytes()
 	if err != nil {
+		log.Printf(logPrefix+"mp3.ReadBytes error: %v", err)
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
+	log.Printf(logPrefix+"serving track as %d bytes of data", len(trackData))
 	w.WriteHeader(http.StatusOK)
 	w.Write(trackData)
 }

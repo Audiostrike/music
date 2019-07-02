@@ -7,7 +7,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"os"
 	"time"
 
 	art "github.com/audiostrike/music/pkg/art"
@@ -75,7 +74,6 @@ func (client *Client) SyncFromPeer(db *AustkDb) ([]*art.Track, error) {
 	if err != nil {
 		log.Fatalf(logPrefix+"GetAllArtByTor <-%v<-%v error: %v", client.torProxy, client.peerAddress, err)
 	}
-	log.Printf(logPrefix+"peer sent reply: %v", reply)
 
 	err = client.importArtReply(reply, db)
 	if err != nil {
@@ -119,9 +117,10 @@ func (client *Client) importArtReply(artReply *art.ArtReply, db *AustkDb) (err e
 }
 
 // DownloadTracks downloads tracks over tor from the peer whose pubkey matches the track artist.
-// The .mp3 file is written under ./tracks
-// in a subdirectory named as the track's ArtistId
-// with the filename as the track's ArtistTrackId.
+//
+// The .mp3 file is written as `./tracks/{ArtistId}/{ArtistTrackId}.mp3`
+// That is, tracks download under an artist-specific subdirectory of ./tracks
+// with filenames from the track's ArtistTrackId.
 func (client *Client) DownloadTracks(tracks []*art.Track, db *AustkDb) (err error) {
 	const logPrefix = "client DownloadTracks "
 	var errors []error
@@ -146,26 +145,11 @@ func (client *Client) DownloadTracks(tracks []*art.Track, db *AustkDb) (err erro
 			continue // to next track
 		}
 
-		err = mkDirectoriesForTrack(track)
+		err = WriteTrack(track.ArtistId, track.ArtistTrackId, replyBytes)
 		if err != nil {
 			errors = append(errors, err)
 			continue // to next track
 		}
-
-		filename := buildFileName(track.ArtistId, track.ArtistTrackId)
-		err = ioutil.WriteFile(filename, replyBytes, 0644)
-		if err != nil {
-			errors = append(errors, err)
-			continue // to next track
-		}
-
-		mp3, err := OpenMp3ForTrackToRead(track.ArtistId, track.ArtistTrackId)
-		if err != nil {
-			errors = append(errors, err)
-			continue // to next track
-		}
-
-		mp3.PlayAndWait()
 	}
 
 	if len(errors) > 0 {
@@ -176,37 +160,6 @@ func (client *Client) DownloadTracks(tracks []*art.Track, db *AustkDb) (err erro
 		return errors[0] // return the first error
 	}
 	
-	return nil
-}
-
-func mkDirectoriesForTrack(track *art.Track) error {
-	const logPrefix = "client mkDirectoriesForTrack "
-
-	dirname := fmt.Sprintf("./tracks")
-	err := os.Mkdir(dirname, 0777)
-	if err != nil {
-		// If directory already exists, swallow this error.
-		log.Printf(logPrefix+"Mkdir ./tracks error: %v", err)
-		// TODO: fail more loudly if a different type of error prevents saving tracks.
-	}
-
-	dirname = fmt.Sprintf("./tracks/%s", track.ArtistId)
-	err = os.Mkdir(dirname, 0777)
-	if err != nil {
-		// If directory already exists, swallow this error.
-		log.Printf(logPrefix+"Mkdir ./tracks/%s error: %v", track.ArtistId, err)
-		// TODO: fail more loudly if a different type of error prevents saving tracks.
-	}
-
-	if track.ArtistAlbumId != "" {
-		dirname = fmt.Sprintf("./tracks/%s/%s", track.ArtistId, track.ArtistAlbumId)
-		err = os.Mkdir(dirname, 0777)
-		if err != nil {
-			log.Printf(logPrefix+"Mkdir ./tracks/%s/%s error: %v",
-				track.ArtistId, track.ArtistAlbumId, err)
-		}
-	}
-
 	return nil
 }
 
@@ -227,7 +180,6 @@ func (client *Client) GetAllArtByTor() (*art.ArtReply, error) {
 		log.Printf(logPrefix+"ReadAll response.Body error: %v", err)
 		return nil, err
 	}
-	log.Printf(logPrefix+"Read reply: %v", string(replyBytes))
 	var reply art.ArtReply
 	err = proto.Unmarshal(replyBytes, &reply)
 	if err != nil {
@@ -244,6 +196,7 @@ func (client *Client) GetTrackByTor(artistId string, artistTrackId string) ([]by
 	
 	trackUrl := fmt.Sprintf("http://%s/art/%s/%s",
 		client.peerAddress, artistId, artistTrackId)
+	log.Printf(logPrefix+"Get %s...", trackUrl)
 	response, err := client.torClient.Get(trackUrl)
 	if err != nil {
 		log.Printf(logPrefix+"torClient.get %v, error: %v", trackUrl, err)
@@ -253,7 +206,7 @@ func (client *Client) GetTrackByTor(artistId string, artistTrackId string) ([]by
 
 	// Read the reply and return the bytes.
 	replyBytes, err := ioutil.ReadAll(response.Body)
-	log.Printf(logPrefix+"Read reply: %v", string(replyBytes))
+	log.Printf(logPrefix+"Read %d-byte reply", len(replyBytes))
 	if err != nil {
 		log.Printf(logPrefix+"ReadAll response.Body error: %v", err)
 		return nil, err

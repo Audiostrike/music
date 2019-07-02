@@ -14,7 +14,7 @@ import (
 //
 //     go/src/github.com/audiostrike/music$ ./austk -help
 //
-// Setup your computer to run `austk` and serve music with the steps at
+// Setup your computer to run `austk` to serve music with the steps at
 // https://github.com/audiostrike/music/wiki/austk-node-setup
 // bitcoind may take several days for initial block download to sync to bitcoin mainnet blockchain.
 //
@@ -23,21 +23,25 @@ import (
 //     go/src/github.com/audiostrike/music$ ./austk -artist aliceinchains
 //
 // The node setup steps create a mysql db user for `austk` to use.
-// Specify that mysql db user with `-dbuser` and the password with `-dbpass`:
-//
+// Specify that mysql username with `-dbuser {username}` and password with `-dbpass {password}`.
 // On first run, also initialize the database with `-dbinit`:
 //
-//     go/src/github.com/audiostrike/music$ ./austk -artist aliceinchains -dbuser examplemysqlusername -dbpass 3x4mpl3mysqlp455w0rd -dbinit
+//     go/src/github.com/audiostrike/music$ ./austk -artist aliceinchains
+//     -dbuser examplemysqlusername -dbpass 3x4mpl3mysqlp455w0rd -dbinit
 //
 // Add mp3 files to the art directory with `-add {filepath}`:
 //
-//     go/src/github.com/audiostrike/music$ ./austk -artist aliceinchains -add /media/recordings/dirt/would.mp3
+//     go/src/github.com/audiostrike/music$ ./austk -artist aliceinchains
+//     -add /media/recordings/dirt/would.mp3
 //
 // To serve added tracks, run as a daemon with the `-daemon` flag.
 // Publish your austk node's tor address with `-host {address}`.
 // Connect securely with your `lnd` through `-macaroon` and `-tlscert`.
 //
-//     go/src/github.com/audiostrike/music$ ./austk -artist aliceinchains -dbuser examplemysqlusername -dbpass 3x4mpl3mysqlp455w0rd -macaroon ~/.lnd/data/chain/bitcoin/mainnet/admin.macaroon -tlscert ~/.lnd/tls.cert -host 45o4k7vt75tgh4zwbkxl5ec6ccagaulr273piugh3tt2cfmcawzeiwqd.onion -daemon
+//     go/src/github.com/audiostrike/music$ ./austk -artist aliceinchains
+//     -dbuser examplemysqlusername -dbpass 3x4mpl3mysqlp455w0rd
+//     -macaroon ~/.lnd/data/chain/bitcoin/mainnet/admin.macaroon -tlscert ~/.lnd/tls.cert
+//     -host 45o4k7vt75tgh4zwbkxl5ec6ccagaulr273piugh3tt2cfmcawzeiwqd.onion -daemon
 //
 func main() {
 	const logPrefix = "austk main "
@@ -125,7 +129,7 @@ func playTracks(tracks []*art.Track) error {
 }
 
 // addMp3File reads mp3 tags from the file named filename
-// and puts a db record for the track, for the artist, and for the album if relevant.
+// and adds/updates a db record for the track, for the artist, and for the album if relevant.
 // This lets the austk node host the mp3 track for the artist and collect payments to download/stream it.
 func addMp3File(filename string, db *audiostrike.AustkDb) (*audiostrike.Mp3, error) {
 	const logPrefix = "austk addMp3File "
@@ -169,8 +173,20 @@ func addMp3File(filename string, db *audiostrike.AustkDb) (*audiostrike.Mp3, err
 		Title:         trackTitle,
 		ArtistAlbumId: artistAlbumID,
 	}
-	err = db.PutTrackForArtist(artist, track)
-	return mp3, err
+	err = db.AddArtistAndTrack(artist, track)
+	if err != nil {
+		log.Printf(logPrefix+"AddArtistAndTrack %v %v, error: %v", artist, track, err)
+		return nil, err
+	}
+
+	err = mp3.SaveForTrack(track.ArtistId, track.ArtistTrackId)
+	if err != nil {
+		log.Printf(logPrefix+"SaveForTrack %s %s, error: %v",
+			track.ArtistId, track.ArtistTrackId, err)
+		return nil, err
+	}
+
+	return mp3, nil
 }
 
 // nameToId converts the name or title of an artist, album, or track
