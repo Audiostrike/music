@@ -1,9 +1,9 @@
 package audiostrike
 
 import (
+	"flag"
 	"net"
 	"os"
-	"flag"
 	"os/user"
 	"path/filepath"
 	"runtime"
@@ -44,6 +44,7 @@ type Config struct {
 	Mp3Dir         string
 	TorProxy       string
 	PeerAddress    string
+	Pubkey         string
 	ListenOn       string // ip address and port to listen, e.g. 0.0.0.0:53545
 
 	InitDb      bool

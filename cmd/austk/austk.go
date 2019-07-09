@@ -81,7 +81,6 @@ func main() {
 			log.Fatalf(logPrefix+"NewClient via torProxy %v to peerAddress %v, error: %v",
 				cfg.TorProxy, cfg.PeerAddress, err)
 		}
-		defer client.CloseConnection()
 
 		tracks, err := client.SyncFromPeer(db)
 		if err != nil {
@@ -95,10 +94,11 @@ func main() {
 			}
 			err = playTracks(tracks)
 		}
+
+		client.CloseConnection()
 	}
 
-	// TODO: sync with each peer from DB
-
+	var server *audiostrike.ArtServer
 	if cfg.RunAsDaemon {
 		log.Println(logPrefix + "Starting Audiostrike server...")
 		server, err := startServer(cfg.ArtistId, db)
@@ -106,7 +106,48 @@ func main() {
 			log.Fatalf(logPrefix+"startServer daemon error: %v", err)
 		}
 		defer server.Stop()
+		
+		cfg.Pubkey, err = server.Pubkey()
+		if err != nil {
+			log.Fatalf(logPrefix+"error getting server pubkey: %v", err)
+		}
+	}
 
+	peers, err := db.SelectAllPeers()
+	if err != nil {
+		log.Printf(logPrefix+"SelectAllPeers error: %v", err)
+	}
+	for _, peer := range peers {
+		if peer.Pubkey == cfg.Pubkey {
+			log.Printf(logPrefix+"skip sync from self pubkey %v", peer)
+			continue // to next peer since we sync'ed this one above.
+			// Could simplify by adding entry above and sync'ing here.
+		}
+		log.Printf(logPrefix+"sync from peer %v", peer)
+		peerAddress := fmt.Sprintf("%s:%d", peer.Host, peer.Port)
+		client, err := audiostrike.NewClient(cfg.TorProxy, peerAddress)
+		if err != nil {
+			log.Fatalf(logPrefix+"NewClient via torProxy %v to peerAddress %v, error: %v",
+				cfg.TorProxy, peer.Host, err)
+		}
+
+		tracks, err := client.SyncFromPeer(db)
+		if err != nil {
+			log.Fatalf(logPrefix+"SyncFromPeer error: %v", err)
+		}
+
+		if cfg.PlayMp3 {
+			err = client.DownloadTracks(tracks, db)
+			if err != nil {
+				log.Fatalf(logPrefix+"DownloadTracks error: %v", err)
+			}
+			err = playTracks(tracks)
+		}
+
+		client.CloseConnection()
+	}
+
+	if cfg.RunAsDaemon {
 		// Execution will stop in this function until server quits from SIGINT etc.
 		server.WaitUntilQuitSignal()
 	}

@@ -17,7 +17,6 @@ import (
 )
 
 type Client struct {
-	artClient        art.ArtClient
 	peerAddress      string
 	torClient        *http.Client
 	torProxy         string
@@ -33,11 +32,6 @@ func NewClient(torProxy string, peerAddress string) (*Client, error) {
 	// Wait a few minutes to connect to tor network.
 	connectionCtx, connectionCancel := context.WithTimeout(ctx, 3*time.Minute)
 
-	artClient, err := newArtClient()
-	if err != nil {
-		return nil, err
-	}
-
 	torClient, err := newTorClient(torProxy)
 	if err != nil {
 		return nil, err
@@ -46,7 +40,6 @@ func NewClient(torProxy string, peerAddress string) (*Client, error) {
 	client := &Client{
 		torProxy:         torProxy,
 		peerAddress:      peerAddress,
-		artClient:        artClient,
 		connectionCtx:    connectionCtx,
 		connectionCancel: connectionCancel,
 		torClient:        torClient,
@@ -58,12 +51,6 @@ func NewClient(torProxy string, peerAddress string) (*Client, error) {
 // This should be called after completing a session with a Client obtained by NewClient.
 func (client *Client) CloseConnection() {
 	client.connectionCancel()
-}
-
-func newArtClient() (artClient art.ArtClient, err error) {
-	const logPrefix = "client newArtClient "
-	log.Println(logPrefix + "artClient ok")
-	return
 }
 
 // SyncFromPeer gets art-directory records (music metadata) from client's peer over tor and imports it into db.
@@ -255,7 +242,8 @@ func (client *Client) GetAllArtByGrpc() (*art.ArtReply, error) {
 	defer peerConnection.Close()
 
 	log.Printf(logPrefix+"GetArt from peer %v...", client.peerAddress)
-	artReply, err := client.artClient.GetArt(client.connectionCtx, &artRequest)
+	artClient := art.NewArtClient(peerConnection)
+	artReply, err := artClient.GetArt(client.connectionCtx, &artRequest)
 	if err != nil {
 		log.Printf(logPrefix+"artClient.GetArt error: %v", err)
 		return nil, err
