@@ -3,7 +3,6 @@ package audiostrike
 import (
 	"context"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"io/ioutil"
 	"net/http"
@@ -21,18 +20,9 @@ import (
 	"log"
 )
 
-var (
-	restHost         = flag.String("host", defaultRESTHost, "ip/tor address for this audiostrike service")
-	restPort         = flag.Int("port", defaultRESTPort, "port where audiostrike protocol is exposed")
-	certFilePath     = flag.String("tlscert", defaultTLSCertPath, "file path for tls cert")
-	macaroonFilePath = flag.String("macaroon", defaultMacaroonPath, "file path for macaroon")
-
-	lndHost     = flag.String("lnd_host", defaultLndHost, "ip/onion address of lnd")
-	lndGrpcPort = flag.Int("lnd_grpc_port", defaultLndGrpcPort, "port where lnd exposes grpc")
-)
-
 // ArtServer has this node's state and music directory.
 type ArtServer struct {
+	config      *Config
 	artDb       *AustkDb
 	httpServer  *http.Server
 	lndClient   lnrpc.LightningClient
@@ -41,18 +31,18 @@ type ArtServer struct {
 }
 
 // NewServer creates an ArtServer instance
-func NewServer(serverOpts []grpc.ServerOption) (*ArtServer, error) {
+func NewServer(serverOpts []grpc.ServerOption, cfg *Config) (*ArtServer, error) {
 	const logPrefix = "server NewServer "
 	serverNameOverride := ""
-	tlsCreds, err := credentials.NewClientTLSFromFile(*certFilePath, serverNameOverride)
+	tlsCreds, err := credentials.NewClientTLSFromFile(cfg.CertFilePath, serverNameOverride)
 	if err != nil {
 		log.Printf(logPrefix+"lnd credentials NewClientTLSFromFile error: %v", err)
 		return nil, err
 	}
 
-	macaroonData, err := ioutil.ReadFile(*macaroonFilePath)
+	macaroonData, err := ioutil.ReadFile(cfg.MacaroonPath)
 	if err != nil {
-		log.Printf(logPrefix+"ReadFile macaroon %v error %v\n", *macaroonFilePath, err)
+		log.Printf(logPrefix+"ReadFile macaroon %v error %v\n", cfg.MacaroonPath, err)
 		return nil, err
 	}
 	mac := &macaroon.Macaroon{}
@@ -68,7 +58,7 @@ func NewServer(serverOpts []grpc.ServerOption) (*ArtServer, error) {
 		grpc.WithPerRPCCredentials(macaroons.NewMacaroonCredential(mac)),
 	}
 
-	lndGrpcEndpoint := fmt.Sprintf("%v:%d", *lndHost, *lndGrpcPort)
+	lndGrpcEndpoint := fmt.Sprintf("%v:%d", cfg.LndHost, cfg.LndGrpcPort)
 	log.Printf(logPrefix+"Dial lnd grpc at %v...", lndGrpcEndpoint)
 	lndConn, err := grpc.Dial(lndGrpcEndpoint, lndOpts...)
 	if err != nil {
@@ -100,9 +90,9 @@ func NewServer(serverOpts []grpc.ServerOption) (*ArtServer, error) {
 }
 
 // Start the ArtServer listening for REST requests for artists in the db.
-func (s *ArtServer) Start(db *AustkDb) (err error) {
+func (s *ArtServer) Start(cfg *Config, db *AustkDb) (err error) {
 	const logPrefix = "server Start "
-	
+
 	s.artDb = db
 	var artists map[string]art.Artist
 	var tracks map[string]art.Track
@@ -129,19 +119,19 @@ func (s *ArtServer) Start(db *AustkDb) (err error) {
 		log.Printf(logPrefix+"Pubkey retrieval error: %v", err)
 		return
 	}
-	
+
 	selfPeer, err := db.SelectPeer(pubkey)
 	if err == sql.ErrNoRows {
-		log.Printf(logPrefix+"Inserting peer %v:%v for %v", *restHost, *restPort, pubkey)
-		err = db.PutPeer(&art.Peer{Pubkey: pubkey, Host: *restHost, Port: uint32(*restPort)})
+		log.Printf(logPrefix+"Inserting peer %v:%v for %v", cfg.RestHost, cfg.RestPort, pubkey)
+		err = db.PutPeer(&art.Peer{Pubkey: pubkey, Host: cfg.RestHost, Port: uint32(cfg.RestPort)})
 	} else if err != nil {
 		log.Printf(logPrefix+"SelectPeer %v error: %v", pubkey, err)
 		return
 	} else {
 		log.Printf(logPrefix+"Updating peer %v:%v to %v:%v",
 			selfPeer.Host, selfPeer.Port,
-			*restHost, *restPort)
-		err = db.PutPeer(&art.Peer{Pubkey: pubkey, Host: *restHost, Port: uint32(*restPort)})
+			cfg.RestHost, cfg.RestPort)
+		err = db.PutPeer(&art.Peer{Pubkey: pubkey, Host: cfg.RestHost, Port: uint32(cfg.RestPort)})
 	}
 	if err != nil {
 		log.Printf(logPrefix+"PutPeer %v error: %v", pubkey, err)
@@ -150,7 +140,7 @@ func (s *ArtServer) Start(db *AustkDb) (err error) {
 
 	// Listen for REST requests and serve in another thread.
 	go s.serve()
-	log.Printf(logPrefix+"serving REST requests on :%d", *restPort)
+	log.Printf(logPrefix+"serving REST requests on :%d", cfg.RestPort)
 
 	return
 }
@@ -161,7 +151,7 @@ func (server *ArtServer) serve() (err error) {
 	httpRouter.HandleFunc("/artist/{id}", server.putArtistHandler).Methods("PUT")
 	httpRouter.HandleFunc("/", server.getAllArtHandler).Methods("GET")
 	httpRouter.HandleFunc("/art/{artist:[^/]*}/{track:.*}", server.getArtHandler).Methods("GET")
-	restAddress := fmt.Sprintf(":%d", *restPort)
+	restAddress := fmt.Sprintf(":%d", server.config.RestPort)
 	err = http.ListenAndServe(restAddress, httpRouter)
 	if err != nil {
 		log.Printf(logPrefix+"ListenAndServe error: %v", err)
@@ -217,7 +207,7 @@ func (server *ArtServer) getAllArtHandler(w http.ResponseWriter, req *http.Reque
 	reply := art.ArtReply{
 		Artists: artistArray,
 		Tracks:  trackArray,
-		Peers: peerArray,
+		Peers:   peerArray,
 	}
 
 	ctx := context.Background()
@@ -301,7 +291,7 @@ func (server *ArtServer) putArtistHandler(w http.ResponseWriter, req *http.Reque
 
 func (server *ArtServer) getArtHandler(w http.ResponseWriter, req *http.Request) {
 	const logPrefix = "server getArtHandler "
-	
+
 	artistId := mux.Vars(req)["artist"]
 	trackId := mux.Vars(req)["track"]
 	if artistId == "" || trackId == "" {
@@ -310,7 +300,7 @@ func (server *ArtServer) getArtHandler(w http.ResponseWriter, req *http.Request)
 		return
 	}
 	log.Printf(logPrefix+"artist: %v, track: %v", artistId, trackId)
-	
+
 	_, err := server.artDb.SelectTrack(artistId, trackId)
 	if err != nil {
 		// TODO: if requested track isn't in the db, error with 404 Not Found
@@ -318,7 +308,7 @@ func (server *ArtServer) getArtHandler(w http.ResponseWriter, req *http.Request)
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
-	
+
 	// TODO: to require payment, check for secret received in receipt for paying invoice
 	// If valid secret is not supplied, issue a Lightning invoice.
 	// For now, skip the payment mechanics and serve the requested resource immediately.
@@ -328,7 +318,7 @@ func (server *ArtServer) getArtHandler(w http.ResponseWriter, req *http.Request)
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
-	
+
 	trackData, err := mp3.ReadBytes()
 	if err != nil {
 		log.Printf(logPrefix+"mp3.ReadBytes error: %v", err)

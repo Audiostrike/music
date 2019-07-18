@@ -7,6 +7,7 @@ import (
 
 	audiostrike "github.com/audiostrike/music/internal"
 	art "github.com/audiostrike/music/pkg/art"
+	flags "github.com/jessevdk/go-flags"
 	"google.golang.org/grpc"
 )
 
@@ -48,6 +49,10 @@ func main() {
 
 	cfg, err := audiostrike.LoadConfig()
 	if err != nil {
+		isShowingHelp := (err.(*flags.Error).Type == flags.ErrHelp)
+		if isShowingHelp {
+			return
+		}
 		log.Fatalf(logPrefix+"LoadConfig error: %v", err)
 	}
 
@@ -101,12 +106,12 @@ func main() {
 	var server *audiostrike.ArtServer
 	if cfg.RunAsDaemon {
 		log.Println(logPrefix + "Starting Audiostrike server...")
-		server, err := startServer(cfg.ArtistId, db)
+		server, err := startServer(cfg, db)
 		if err != nil {
 			log.Fatalf(logPrefix+"startServer daemon error: %v", err)
 		}
 		defer server.Stop()
-		
+
 		cfg.Pubkey, err = server.Pubkey()
 		if err != nil {
 			log.Fatalf(logPrefix+"error getting server pubkey: %v", err)
@@ -133,7 +138,9 @@ func main() {
 
 		tracks, err := client.SyncFromPeer(db)
 		if err != nil {
-			log.Fatalf(logPrefix+"SyncFromPeer error: %v", err)
+			// Log misbehaving peer but continue with other peers.
+			log.Printf(logPrefix+"SyncFromPeer error: %v", err)
+			continue
 		}
 
 		if cfg.PlayMp3 {
@@ -239,11 +246,11 @@ func nameToId(name string) string {
 
 // startServer sets the configured artist to use the lnd server and starts running as a daemon
 // until SIGINT (ctrl-c or `kill`) is received.
-func startServer(artistID string, db *audiostrike.AustkDb) (s *audiostrike.ArtServer, err error) {
+func startServer(cfg *audiostrike.Config, db *audiostrike.AustkDb) (s *audiostrike.ArtServer, err error) {
 	const logPrefix = "austk startServer "
 
 	opts := [...]grpc.ServerOption{}
-	s, err = audiostrike.NewServer(opts[:])
+	s, err = audiostrike.NewServer(opts[:], cfg)
 	if err != nil {
 		log.Printf(logPrefix+"NewServer error: %v", err)
 		return
@@ -255,13 +262,13 @@ func startServer(artistID string, db *audiostrike.AustkDb) (s *audiostrike.ArtSe
 		log.Printf(logPrefix+"s.Pubkey error: %v", err)
 		return
 	}
-	err = db.UpdateArtistPubkey(artistID, pubkey)
+	err = db.UpdateArtistPubkey(cfg.ArtistId, pubkey)
 	if err != nil {
-		log.Printf(logPrefix+"db.SetPubkeyForArtist %v, error: %v", artistID, err)
+		log.Printf(logPrefix+"db.SetPubkeyForArtist %v, error: %v", cfg.ArtistId, err)
 		return
 	}
 
-	err = s.Start(db)
+	err = s.Start(cfg, db)
 	if err != nil {
 		log.Printf(logPrefix+"Start error: %v", err)
 	}
