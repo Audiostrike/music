@@ -7,13 +7,13 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"os"
 	"time"
 
 	art "github.com/audiostrike/music/pkg/art"
 	"github.com/cretz/bine/tor"
 	"github.com/golang/protobuf/proto"
 	"google.golang.org/grpc"
+	"log"
 )
 
 type Client struct {
@@ -25,20 +25,24 @@ type Client struct {
 	connectionCancel context.CancelFunc
 }
 
+// NewClient creates a new austk Client to communicate over torProxy with peerAddress.
 func NewClient(torProxy string, peerAddress string) (*Client, error) {
 	const logPrefix = "client NewClient "
+
 	ctx := context.Background()
 	// Wait a few minutes to connect to tor network.
 	connectionCtx, connectionCancel := context.WithTimeout(ctx, 3*time.Minute)
-	artClient, err := newArtClient(connectionCtx, torProxy, peerAddress)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, logPrefix+"newArtClient error %v\n", err)
-		return nil, err
-	}
-	torClient, err := NewTorClient(torProxy)
+
+	artClient, err := newArtClient()
 	if err != nil {
 		return nil, err
 	}
+
+	torClient, err := newTorClient(torProxy)
+	if err != nil {
+		return nil, err
+	}
+
 	client := &Client{
 		torProxy:         torProxy,
 		peerAddress:      peerAddress,
@@ -50,65 +54,174 @@ func NewClient(torProxy string, peerAddress string) (*Client, error) {
 	return client, nil
 }
 
+// CloseConnection closes the onion-routing connection to the peer.
+// This should be called after completing a session with a Client obtained by NewClient.
 func (client *Client) CloseConnection() {
 	client.connectionCancel()
 }
 
-func newArtClient(ctx context.Context, torProxy string, endpoint string) (artClient art.ArtClient, err error) {
+func newArtClient() (artClient art.ArtClient, err error) {
 	const logPrefix = "client newArtClient "
-	fmt.Println(logPrefix + "artClient ok")
+	log.Println(logPrefix + "artClient ok")
 	return
 }
 
+// SyncFromPeer gets art-directory records (music metadata) from client's peer over tor and imports it into db.
+func (client *Client) SyncFromPeer(db *AustkDb) ([]*art.Track, error) {
+	const logPrefix = "client SyncFromPeer "
+
+	reply, err := client.GetAllArtByTor()
+	if err != nil {
+		log.Fatalf(logPrefix+"GetAllArtByTor <-%v<-%v error: %v", client.torProxy, client.peerAddress, err)
+	}
+
+	err = client.importArtReply(reply, db)
+	if err != nil {
+		log.Fatalf(logPrefix+"importArtReply error: %v", err)
+	}
+	return reply.Tracks, err
+}
+
+func (client *Client) importArtReply(artReply *art.ArtReply, db *AustkDb) (err error) {
+	const logPrefix = "austk importArtReply "
+	var errors []error
+	for _, artist := range artReply.Artists {
+		err = db.PutArtist(artist)
+		if err != nil {
+			errors = append(errors, err)
+		}
+	}
+
+	for _, track := range artReply.Tracks {
+		err = db.PutTrack(track)
+		if err != nil {
+			errors = append(errors, err)
+		}
+	}
+
+	for _, peer := range artReply.Peers {
+		err = db.PutPeer(peer)
+		if err != nil {
+			errors = append(errors, err)
+		}
+	}
+
+	if len(errors) > 0 {
+		log.Printf(logPrefix+"%v errors:", len(errors))
+		for _, err = range errors {
+			log.Printf(logPrefix+"\terror: %v", err)
+		}
+		return errors[0] // return the first error.
+	}
+	return nil
+}
+
+// DownloadTracks downloads tracks over tor from the peer whose pubkey matches the track artist.
+//
+// The .mp3 file is written as `./tracks/{ArtistId}/{ArtistTrackId}.mp3`
+// That is, tracks download under an artist-specific subdirectory of ./tracks
+// with filenames from the track's ArtistTrackId.
+func (client *Client) DownloadTracks(tracks []*art.Track, db *AustkDb) (err error) {
+	const logPrefix = "client DownloadTracks "
+	var errors []error
+	for _, track := range tracks {
+		trackArtist, err := db.SelectArtist(track.ArtistId)
+		if err != nil {
+			errors = append(errors, err)
+			continue // to next track
+		}
+
+		peer, err := db.SelectPeer(trackArtist.Pubkey)
+		if peer == nil {
+			err = fmt.Errorf("no known peer owns pubkey %s for %s/%s.mp3",
+				trackArtist.Pubkey, track.ArtistId, track.ArtistTrackId)
+			errors = append(errors, err)
+			continue // to next track
+		}
+
+		replyBytes, err := client.GetTrackByTor(track.ArtistId, track.ArtistTrackId)
+		if err != nil {
+			errors = append(errors, err)
+			continue // to next track
+		}
+
+		err = WriteTrack(track.ArtistId, track.ArtistTrackId, replyBytes)
+		if err != nil {
+			errors = append(errors, err)
+			continue // to next track
+		}
+	}
+
+	if len(errors) > 0 {
+		log.Printf(logPrefix+"%v errors:", len(errors))
+		for _, err = range errors {
+			log.Printf(logPrefix+"\terror: %v", err)
+		}
+		return errors[0] // return the first error
+	}
+	
+	return nil
+}
+
+// GetAllArtByTor gets the art-directory music metadata over tor from the client's peer.
 func (client *Client) GetAllArtByTor() (*art.ArtReply, error) {
 	const logPrefix = "client GetAllArtByTor "
-	fmt.Printf(logPrefix+"with torClient proxy %v to http://%v\n", client.torProxy, client.peerAddress)
 	response, err := client.torClient.Get("http://" + client.peerAddress)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, logPrefix+"torClient.get %v, error: %v\n", client.peerAddress, err)
+		log.Printf(logPrefix+"torClient.Get %v, error: %v", client.peerAddress, err)
 		return nil, err
 	}
 	defer response.Body.Close()
+	log.Printf(logPrefix+"torClient %v did Get http://%v", client.torProxy, client.peerAddress)
+
+	// Read the reply into an ArtReply.
 	replyBytes, err := ioutil.ReadAll(response.Body)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, logPrefix+"ReadAll response.Body error: %v\n", err)
+		log.Printf(logPrefix+"ReadAll response.Body error: %v", err)
 		return nil, err
 	}
-	fmt.Printf(logPrefix+"Read reply: %v\n", string(replyBytes))
 	var reply art.ArtReply
 	err = proto.Unmarshal(replyBytes, &reply)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, logPrefix+"Unmarshal reply error: %v\n", err)
+		log.Printf(logPrefix+"Unmarshal reply error: %v", err)
 		return nil, err
 	}
+	
 	return &reply, nil
 }
 
-func (client *Client) GetArtByTor(artistId string, artistTrackId string) ([]byte, error) {
+// GetTrackByTor gets the track (mp3 bytes by http over tor) with artistTrackId by the artist with artistId.
+func (client *Client) GetTrackByTor(artistId string, artistTrackId string) ([]byte, error) {
 	const logPrefix = "client GetArtByTor "
-	trackUrl := fmt.Sprintf(
-		"http://%s/art/%s/%s",
+	
+	trackUrl := fmt.Sprintf("http://%s/art/%s/%s",
 		client.peerAddress, artistId, artistTrackId)
+	log.Printf(logPrefix+"Get %s...", trackUrl)
 	response, err := client.torClient.Get(trackUrl)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, logPrefix+"torClient.get %v, error: %v\n", trackUrl, err)
+		log.Printf(logPrefix+"torClient.get %v, error: %v", trackUrl, err)
 		return nil, err
 	}
 	defer response.Body.Close()
+
+	// Read the reply and return the bytes.
 	replyBytes, err := ioutil.ReadAll(response.Body)
-	fmt.Printf(logPrefix+"Read reply: %v\n", string(replyBytes))
+	log.Printf(logPrefix+"Read %d-byte reply", len(replyBytes))
 	if err != nil {
-		fmt.Fprintf(os.Stderr, logPrefix+"ReadAll response.Body error: %v\n", err)
+		log.Printf(logPrefix+"ReadAll response.Body error: %v", err)
 		return nil, err
 	}
 	return replyBytes, nil
 }
 
+// GetAllArtByGrpc is similar to GetAllArtByTor but uses Grpc rather than raw http over tor.
+// This is dead code for now, as GetAllArtByTor seems to expose the needed functionality.
+// This code may be revived if fields must be specified in the ArtRequest, e.g. for filtering results.
 func (client *Client) GetAllArtByGrpc() (*art.ArtReply, error) {
 	const logPrefix = "client GetAllArtByGrpc "
 	torClient, err := tor.Start(client.connectionCtx, nil)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, logPrefix+"tor.Start error: %v\n", err)
+		log.Printf(logPrefix+"tor.Start error: %v", err)
 		return nil, err
 	}
 	defer torClient.Close()
@@ -117,12 +230,12 @@ func (client *Client) GetAllArtByGrpc() (*art.ArtReply, error) {
 	}
 	dialer, err := torClient.Dialer(client.connectionCtx, &dialConf)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, logPrefix+"tor.Dialer error: %v\n", err)
+		log.Printf(logPrefix+"tor.Dialer error: %v", err)
 		return nil, err
 	}
 
 	artRequest := art.ArtRequest{}
-	fmt.Printf(logPrefix+"Dial peer %v by over tor...\n", client.peerAddress)
+	log.Printf(logPrefix+"Dial peer %v by over tor...", client.peerAddress)
 	peerConnection, err := grpc.DialContext(
 		client.connectionCtx,
 		client.peerAddress,
@@ -136,25 +249,25 @@ func (client *Client) GetAllArtByGrpc() (*art.ArtReply, error) {
 		}),
 	)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, logPrefix+"Dial peer error: %v\n", err)
+		log.Printf(logPrefix+"Dial peer error: %v", err)
 		return nil, err
 	}
 	defer peerConnection.Close()
 
-	fmt.Printf(logPrefix+"GetArt from peer %v...\n", client.peerAddress)
+	log.Printf(logPrefix+"GetArt from peer %v...", client.peerAddress)
 	artReply, err := client.artClient.GetArt(client.connectionCtx, &artRequest)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, logPrefix+"artClient.GetArt error: %v\n", err)
+		log.Printf(logPrefix+"artClient.GetArt error: %v", err)
 		return nil, err
 	}
 	return artReply, nil
 }
 
-func NewTorClient(torProxy string) (*http.Client, error) {
+func newTorClient(torProxy string) (*http.Client, error) {
 	const logPrefix = "client NetTorClient "
 	torProxyUrl, err := url.Parse(torProxy)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, logPrefix+"url.Parse %v error: %v\n", torProxy, err)
+		log.Printf(logPrefix+"url.Parse %v error: %v", torProxy, err)
 		return nil, err
 	}
 	return &http.Client{

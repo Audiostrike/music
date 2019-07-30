@@ -4,12 +4,12 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"os"
 
 	// This loads the mysql driver that implements sql.DB below. The namespace is discarded.
 	_ "github.com/go-sql-driver/mysql"
 
 	art "github.com/audiostrike/music/pkg/art" // protobuf for artists, albums, peers, tracks
+	"log"
 )
 
 // AustkDb persists art data to a sql database and retrieves saved art
@@ -31,7 +31,7 @@ func InitializeDb(sqlDbName string, sqlDbUser string, sqlDbPassword string) erro
 		"CREATE TABLE `artist` (" +
 			"`artist_id` varchar(32) NOT NULL," +
 			"`name` varchar(64) NOT NULL," +
-			"`pubkey` char(33) DEFAULT NULL," +
+			"`pubkey` char(66) DEFAULT NULL," +
 			" PRIMARY KEY (`artist_id`)" +
 			")")
 	if err != nil {
@@ -64,7 +64,7 @@ func InitializeDb(sqlDbName string, sqlDbUser string, sqlDbPassword string) erro
 	}
 	_, err = initDbTx.Exec(
 		"CREATE TABLE `peer` (" +
-			"`pubkey` char(33) NOT NULL," +
+			"`pubkey` char(66) NOT NULL," +
 			"`host` varchar(56) NOT NULL," +
 			"`port` smallint(5) unsigned NOT NULL," +
 			" PRIMARY KEY (`pubkey`)" +
@@ -79,13 +79,17 @@ func InitializeDb(sqlDbName string, sqlDbUser string, sqlDbPassword string) erro
 
 // OpenDb instantiates an ArtDb with an open connection to the local sql db.
 func OpenDb(sqlDbName string, sqlDbUser string, sqlDbPassword string) (*AustkDb, error) {
+	const logPrefix = "db OpenDb "
+
 	dataSource := fmt.Sprintf("%s:%s@tcp(localhost)/%s", sqlDbUser, sqlDbPassword, sqlDbName)
 	sqlDb, err := sql.Open("mysql", dataSource)
 	if err != nil {
 		return nil, err
 	}
-	fmt.Printf("Opened connection to db %v.\n", dataSource)
+	log.Printf(logPrefix+"Opened connection to db %v", dataSource)
+
 	db := &AustkDb{sqlDb: sqlDb}
+
 	err = db.verifyReady()
 	return db, err
 }
@@ -131,13 +135,13 @@ func (db *AustkDb) SelectAllArtists() (artists map[string]art.Artist, err error)
 	const logPrefix = "db SelectAllArtists "
 	err = db.verifyReady()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, logPrefix+"db not ready, error: %v\n", err)
+		log.Printf(logPrefix+"db not ready, error: %v", err)
 		return nil, err
 	}
 	artistRows, err := db.sqlDb.Query(
 		"SELECT `artist_id`, `name`, `pubkey` FROM `artist`")
 	if err != nil {
-		fmt.Fprintf(os.Stderr, logPrefix+"Query error: %v\n", err)
+		log.Printf(logPrefix+"Query error: %v", err)
 		return
 	}
 	defer artistRows.Close()
@@ -150,7 +154,7 @@ func (db *AustkDb) SelectAllArtists() (artists map[string]art.Artist, err error)
 	for artistRows.Next() {
 		err = artistRows.Scan(&artistID, &name, &pubkey)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, logPrefix+"Scan error: %v\n", err)
+			log.Printf(logPrefix+"row Scan error: %v", err)
 			return
 		}
 		artists[artistID] = art.Artist{
@@ -161,65 +165,151 @@ func (db *AustkDb) SelectAllArtists() (artists map[string]art.Artist, err error)
 	return
 }
 
-// SelectPeer returns the peer from the sqlDb with the given pubkey. ErrNoRows is returned if the peer is not yet in the database.
+// SelectPeer returns the peer from the sqlDb with the given pubkey.
+// ErrNoRows is returned if the peer is not yet in the database.
 func (db *AustkDb) SelectPeer(pubkey string) (peer *art.Peer, err error) {
 	const logPrefix = "db SelectPeer "
+
 	err = db.verifyReady()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, logPrefix+"db not ready, error: %v\n", err)
+		log.Printf(logPrefix+"db not ready, error: %v", err)
 		return nil, err
 	}
+
 	peerRow := db.sqlDb.QueryRow(
-		"SELECT `host`, `port` FROM `peer` WHERE `pubkey` = ?", pubkey[:33])
+		"SELECT `host`, `port` FROM `peer` WHERE `pubkey` = ?", pubkey)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, logPrefix+"QueryRow error: %v\n", err)
-		return
+		log.Printf(logPrefix+"QueryRow error: %v", err)
+		return nil, err
 	}
+
 	var (
 		host string
 		port uint32
 	)
 	err = peerRow.Scan(&host, &port)
-	if err == nil {
-		peer = &art.Peer{
-			Pubkey: pubkey,
-			Host:   host,
-			Port:   port}
-	} else if err != nil {
-		fmt.Fprintf(os.Stderr, logPrefix+"Scan error: %v\n", err)
+	if err != nil {
+		log.Printf(logPrefix+"row Scan error: %v", err)
+		return nil, err
 	}
-	return
+
+	peer = &art.Peer{
+		Pubkey: pubkey,
+		Host:   host,
+		Port:   port}
+	return peer, nil
 }
 
 // SelectArtist returns the artist from the sqlDb with the given artistID.
 func (db *AustkDb) SelectArtist(artistID string) (artist *art.Artist, err error) {
 	const logPrefix = "db SelectArtist "
+
 	err = db.verifyReady()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, logPrefix+"db not ready, error: %v\n", err)
+		log.Printf(logPrefix+"db not ready, error: %v", err)
 		return nil, err
 	}
+
 	artistRow := db.sqlDb.QueryRow(
 		"SELECT `name`, `pubkey` FROM `artist` WHERE `artist_id` = ?", artistID)
 	if err != nil {
-		return artist, err
+		return nil, err
 	}
+
 	var (
 		name   string
 		pubkey string
 	)
 	err = artistRow.Scan(&name, &pubkey)
 	if err != nil {
-		return
+		return nil, err
 	}
+
 	artist = &art.Artist{
 		ArtistId: artistID,
 		Name:     name,
 		Pubkey:   pubkey}
-	return
+	return artist, nil
 }
 
-// SelectArtistTracks reads all tracks for the specified artist from the db.
+// SelectArtistTracks gets all tracks from the specified artist from the db.
+//
+// Tracks are organized by artist. A given ArtistTrackId is only unique for a given ArtistId.
+// Tracks optionally use ArtistAlbumID to define albums for the given artist.
+// If so, they should have an AlbumTrackNumber for the track sequence on that album.
+// For example, Alice in Chains could run an austk node and add .mp3 files that they own/produced:
+//  Alice_in_Chains/We_Die_Young_(Single).mp3
+//  Alice_in_Chains/Man_in_the_Box_(Single).mp3
+//  Alice_in_Chains/Facelift/01.We_Die_Young.mp3
+//  Alice_in_Chains/Facelift/02.Man_in_the_Box.mp3
+//  Alice_in_Chains/Facelift/03.Sea_of_Sorrow.mp3
+//  ...
+//  Alice_in_Chains/Facelift/12.Real_Thing.mp3
+//  Alice_in_Chains/Dirt/01.Them_Bones.mp3
+//  ...
+//  Alice_in_Chains/Dirt/13.Would.mp3
+//
+// Alice in Chains could add their mp3 files to their austk node to publish 11 tracks as
+// owned/hosted by and payable to Alice in Chains' node:
+// [
+//  {ArtistID:"aliceinchains", ArtistTrackID:"wedieyoung", Title:"We Die Young"},
+//  {ArtistID:"aliceinchains", ArtistTrackID:"maninthebox", Title:"Man in the Box"},
+//  {ArtistID:"aliceinchains", ArtistTrackID:"facelift/wedieyoung", Title:"We Die Young", AlbumTrackNumber:1},
+//  {ArtistID:"aliceinchains", ArtistTrackID:"facelift/maninthebox", Title:"Man in the Box", AlbumTrackNumber:2},
+//  {ArtistID:"aliceinchains", ArtistTrackID:"facelift/seaofsorrow", Title:"Sea of Sorrow", AlbumTrackNumber:3},
+//  ...
+//  {ArtistID:"aliceinchains", ArtistTrackID:"facelift/realthing", Title:"Real Thing", AlbumTrackNumber:12},
+//  {ArtistID:"aliceinchains", ArtistTrackID:"dirt/thembones", Title:"Them Bones", AlbumTrackNumber:1},
+//  ...
+//  {ArtistID:"aliceinchains", ArtistTrackID:"dirt/would", Title:"Would?", AlbumTrackNumber:13},
+// ]
+//
+// Tracks that are in albums have ArtistTrackId prefixed with ArtistAlbumId and a slash, e.g. "dirt/would".
+// The url or file path for a track has ArtistId + '/' + ArtistTrackId.
+// For example, the above tracks would be hsoted in url paths like these:
+//   http.../aliceinchains/wedieyoung
+//   http.../aliceinchains/maninthebox
+//   http.../aliceinchains/facelift/wedieyoung
+//   ...
+//   http.../aliceinchains/dirt/would
+//
+// The austk node run by Alice in Chains would copy those .mp3 files to paths like these:
+//   ./tracks/aliceinchains/wedieyoung.mp3
+//   ./tracks/aliceinchains/maninthebox.mp3
+//   ./tracks/aliceinchains/facelift/wedieyoung.mp3
+//   ...
+//   ./tracks/aliceinchains/dirt/would.mp3
+//
+// Alice in Chains' austk node would then serve those .mp3 files or streams of them
+// to any fan whose Audiostrike client presents proof of payment of an invoice
+// issued by the austk node hosting the requested tracks.
+//
+// For tracks in albums, the ArtistAlbumId is stored in the mysql database as a distinct field
+// for the purpose of normalizing the album details into the albums table.
+// The album identifier is also present in the ArtistTrackId in order to accomodate multiple "releases"
+// of a given title and alternative hierarchies of music for a given artist.
+// For example, an artist may release multiple episodes (each as a track) in each season of a series.
+// Such tracks could have ArtistTrackId and AlbumTrackNumber values like these:
+//   [
+//    {ArtistId:"stephanlivera",
+//     ArtistTrackId:"slp/bitcoin2019/connerfromknechtbitcoinlightningwatchtowers",
+//     AlbumTrackNumber:81},
+//    {ArtistId:"stephanlivera",
+//     ArtistTrackId:"slp/bitcoin2019/sergejkotliarbuildingbitcoinscirculareconomy",
+//     AlbumTrackNumber:80},
+//    ...
+//    {ArtistId:"stephanlivera",
+//     ArtistTrackId:"slp/bitcoin2018/bitcoinassoundmoneywithsaifedeanammous",
+//     AlbumTrackNumber:1},
+//   ]
+//
+// An Audiostrike client could then give the fan the option to play an episode, a whole season,
+// or the whole podcast in order of the AlbumTrackNumber values.
+//
+// Music artists could use additional slashes for additional organization containers/hierarchies.
+// For example, a music artist may cut an episode into multiple tracks, each episode then has multiple tracks,
+// each season having multiple episodes, and each series having multiple seasons.
+//
 func (db *AustkDb) SelectArtistTracks(artistID string) (tracks map[string]art.Track, err error) {
 	trackRows, err := db.sqlDb.Query(
 		"SELECT `artist_track_id`, `title`, `artist_album_id`, `album_track_num`"+
@@ -253,7 +343,7 @@ func (db *AustkDb) SelectArtistTracks(artistID string) (tracks map[string]art.Tr
 }
 
 // SelectAlbumTracks returns the db tracks from the album with the given albumID
-func (db *AustkDb) SelectAlbumTracks(artistID string, artistAlbumID string) (tracks map[string]art.Track, err error) {
+func (db *AustkDb) SelectAlbumTracks(artistID string, artistAlbumID string) (tracks map[string]*art.Track, err error) {
 	trackRows, err := db.sqlDb.Query(
 		"SELECT `artist_track_id`, `title`, `album_track_num`"+
 			" FROM `track`"+
@@ -263,7 +353,7 @@ func (db *AustkDb) SelectAlbumTracks(artistID string, artistAlbumID string) (tra
 		return
 	}
 	defer trackRows.Close()
-	tracks = make(map[string]art.Track)
+	tracks = make(map[string]*art.Track)
 	var (
 		trackID       string
 		name          string
@@ -274,7 +364,7 @@ func (db *AustkDb) SelectAlbumTracks(artistID string, artistAlbumID string) (tra
 		if err != nil {
 			return
 		}
-		tracks[trackID] = art.Track{
+		tracks[trackID] = &art.Track{
 			Title:            name,
 			ArtistId:         artistID,
 			ArtistAlbumId:    artistAlbumID,
@@ -284,8 +374,9 @@ func (db *AustkDb) SelectAlbumTracks(artistID string, artistAlbumID string) (tra
 }
 
 // PutPeer INSERTs or UPDATEs the peer with the given pubkey.
-func (db *AustkDb) PutPeer(peer *art.Peer) (err error) {
+func (db *AustkDb) PutPeer(peer *art.Peer) error {
 	const logPrefix = "db PutPeer "
+
 	existingPeer, err := db.SelectPeer(peer.Pubkey)
 	if err == sql.ErrNoRows {
 		_, err = db.sqlDb.Exec(
@@ -293,43 +384,49 @@ func (db *AustkDb) PutPeer(peer *art.Peer) (err error) {
 				" VALUES(?, ?, ?)",
 			peer.Pubkey, peer.Host, peer.Port)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, logPrefix+"sqlDb.Exec error: %v\n", err)
-			return
-		}
-	} else if err != nil {
-		fmt.Fprintf(os.Stderr, logPrefix+"SelectPeer error: %v\n", err)
-		return
-	} else {
-		fmt.Printf(logPrefix+"Update peer %v from %v:%d to %v:%d\n",
-			peer.Pubkey,
-			existingPeer.Host, existingPeer.Port,
-			peer.Host, peer.Port)
-		_, err = db.sqlDb.Exec(
-			"UPDATE `peer`"+
-				" SET `host` = ?, `port` = ?"+
-				" WHERE `pubkey` = ?",
-			peer.Host, peer.Port, peer.Pubkey[:33])
-		if err != nil {
-			fmt.Fprintf(os.Stderr, logPrefix+"sqlDb.Exec error: %v\n", err)
-			return
-		}
-		updatedPeer, err := db.SelectPeer(peer.Pubkey)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, logPrefix+"SelectPeer error: %v\n", err)
+			log.Printf(logPrefix+"sqlDb.Exec error: %v", err)
 			return err
 		}
-		fmt.Printf(logPrefix+"updated to host %v\n", updatedPeer.Host)
+		// Successfully inserted the new peer, so return early.
+		return nil
+	} else if err != nil {
+		log.Printf(logPrefix+"SelectPeer error: %v", err)
+		return err
 	}
-	return
+
+	log.Printf(logPrefix+"Update peer %v from %v:%d to %v:%d",
+		peer.Pubkey,
+		existingPeer.Host, existingPeer.Port,
+		peer.Host, peer.Port)
+	_, err = db.sqlDb.Exec(
+		"UPDATE `peer`"+
+			" SET `host` = ?, `port` = ?"+
+			" WHERE `pubkey` = ?",
+		peer.Host, peer.Port, peer.Pubkey)
+	if err != nil {
+		log.Printf(logPrefix+"sqlDb.Exec error: %v", err)
+		return err
+	}
+
+	updatedPeer, err := db.SelectPeer(peer.Pubkey)
+	if err != nil {
+		log.Printf(logPrefix+"SelectPeer error: %v", err)
+		return err
+	}
+	log.Printf(logPrefix+"updated to host %v", updatedPeer.Host)
+
+	return nil
 }
 
-// PutArtist INSERTs or UPDATEs the specified artist using artist_id as the unique key.
-func (db *AustkDb) PutArtist(artist *art.Artist) (err error) {
+// PutArtist INSERTs or UPDATEs the specified artist using artist.id as the unique key..
+func (db *AustkDb) PutArtist(artist *art.Artist) error {
 	const logPrefix = "db PutArtist "
+
 	artists, err := db.SelectAllArtists()
 	if err != nil {
-		return
+		return err
 	}
+
 	_, isReplacing := artists[artist.ArtistId]
 	if isReplacing {
 		_, err = db.sqlDb.Exec(
@@ -344,14 +441,41 @@ func (db *AustkDb) PutArtist(artist *art.Artist) (err error) {
 			artist.ArtistId, artist.Name, artist.Pubkey)
 	}
 	if err != nil {
-		fmt.Fprintf(os.Stderr, logPrefix+"Exec sql error: %v\n", err)
-		return
+		log.Printf(logPrefix+"Exec sql error: %v\n", err)
+		return err
 	}
-	artists[artist.ArtistId] = *artist
-	return
+
+	return nil
 }
 
-// PutAlbum inserts or updates the specified album using its artist_id and artist_album_id as the unique key
+// UpdateArtistPubkey sets the pubkey of the artist record for the given artistID.
+//
+// This lets the artist publish music verifiably from that pubkey such that fans
+// can confidently pay this artist's austk node for the tracks
+// if the fan knows that the artist owns that pubkey.
+//
+// This INSERTs the artist if artistID is not yet in the artist db table.
+// If the artist already is in the db, PutArtist UPDATEs the record.
+// Otherwise, this throws an error that the artist is not found in the db.
+func (db *AustkDb) UpdateArtistPubkey(artistID string, pubkey string) error {
+	const logPrefix = "austk setPubkeyForArtist "
+
+	artist, err := db.SelectArtist(artistID)
+	if err != nil {
+		log.Printf(logPrefix+"selectArtist %v, error: %v", artistID, err)
+		return err
+	}
+
+	artist.Pubkey = pubkey
+
+	err = db.PutArtist(artist)
+	if err != nil {
+		log.Printf(logPrefix+"PutArtist Pubkey %v, error: %v", artist.Pubkey, err)
+	}
+	return err
+}
+
+// PutAlbum INSERTs or UPDATEs the specified album using its artist_id and artist_album_id as the unique key
 func (db *AustkDb) PutAlbum(album art.Album) (err error) {
 	_, err = db.SelectAlbum(album.ArtistId, album.ArtistAlbumId)
 	if err == sql.ErrNoRows {
@@ -369,8 +493,40 @@ func (db *AustkDb) PutAlbum(album art.Album) (err error) {
 	return
 }
 
-// PutTrack inserts or updates the specified track using its id as the unique key
-func (db *AustkDb) PutTrack(track art.Track) (albumTrackCount int, err error) {
+// AddArtistAndTrack puts the db records for the given artist and track.
+// It preserves any existing artist record's pubkey, failing if the new artist pubkey is different.
+func (db *AustkDb) AddArtistAndTrack(artist *art.Artist, track *art.Track) error {
+	const logPrefix = "db PutTrackForArtist "
+
+	dbArtist, err := db.SelectArtist(artist.ArtistId)
+	// If artist is already in the db, keep the Pubkey.
+	// Ignore ErrNoRows. Artist is not yet been in the db table, so no pubkey is known to keep.
+	if err == nil {
+		// Keep the Pubkey from the db.
+		// TODO: prompt user or otherwise resolve conflicting pubkey for this artist.
+		if artist.Pubkey != "" && artist.Pubkey != dbArtist.Pubkey {
+			err = fmt.Errorf("Artist %s already has pubkey %s",
+				artist.ArtistId, dbArtist.Pubkey)
+			log.Printf(logPrefix+"Reject pubkey update to %s, error: %v", artist.Pubkey, err)
+			return err
+		}
+		artist.Pubkey = dbArtist.Pubkey
+	} else if err != sql.ErrNoRows {
+		log.Printf(logPrefix+"Failed so select artist %s, error: %v", artist.ArtistId, err)
+		return err
+	}
+	err = db.PutArtist(artist)
+	if err != nil {
+		log.Printf(logPrefix+"PutArtist %v, error: %v", artist, err)
+		return err
+	}
+
+	err = db.PutTrack(track)
+	return err
+}
+
+// PutTrack INSERTs or UPDATEs the track with the ArtistId and ArtistAlbumId as a composite key.
+func (db *AustkDb) PutTrack(track *art.Track) (err error) {
 	albumTracks, err := db.SelectAlbumTracks(track.ArtistId, track.ArtistAlbumId)
 	if err != nil {
 		return
@@ -390,17 +546,16 @@ func (db *AustkDb) PutTrack(track art.Track) (albumTrackCount int, err error) {
 			track.ArtistId, track.ArtistTrackId,
 			track.Title, track.ArtistAlbumId, len(albumTracks)+1)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "AustkDb PutTrack failed INSERT, error: %v\n", err)
-			return len(albumTracks), err
+			log.Printf("Exec INSERT track failed, error: %v", err)
+			return err
 		}
 	}
-	albumTracks[track.ArtistTrackId] = track
-	albumTrackCount = len(albumTracks)
-	return
+	return nil
 }
 
-// DeleteAlbum deletes the tracks and album with the specified artistID and albumID from the track and album tables.
-func (db *AustkDb) DeleteAlbum(artistID string, albumID string) (err error) {
+// DeleteAlbum DELETEs the tracks and album with the specified artistID and albumID
+// from the track and album tables.
+func (db *AustkDb) DeleteAlbum(artistID string, albumID string) error {
 	// TODO: check whether request is authorized to delete existing track.
 	// Each request can carry an auth token signed by the artist whose
 	// public key was used to issue the track.
@@ -409,19 +564,21 @@ func (db *AustkDb) DeleteAlbum(artistID string, albumID string) (err error) {
 			" WHERE `artist_id` = ? AND `artist_album_id` = ?",
 		artistID, albumID)
 	if err != nil {
-		fmt.Printf("AustkDb DeleteAlbum failed DELETE from album %v, error: %v\n", albumID, err)
+		log.Printf("Exec DELETE track from artist %v on album %v, error: %v",
+			artistID, albumID, err)
 		return err
 	}
+
 	result, err = db.sqlDb.Exec(
 		"DELETE FROM `album`"+
 			" WHERE `artist_id` = ? AND `artist_album_id` = ?",
 		artistID, albumID)
 	albumDeletedCount, err := result.RowsAffected()
 	if albumDeletedCount == 0 {
-		err = fmt.Errorf("AustkDb DeleteAlbum album not found, id: %s", albumID)
+		return fmt.Errorf("AustkDb DeleteAlbum album not found, id: %s", albumID)
 	}
 
-	return err
+	return nil
 }
 
 // SelectAlbum returns the metadata of the db album for the given artist with the given albumID
@@ -471,12 +628,13 @@ func (db *AustkDb) SelectArtistAlbums(artistID string) (map[string]*art.Album, e
 	return albums, nil
 }
 
+// SelectAllPeers selects an array of all the Peer records.
 func (db *AustkDb) SelectAllPeers() ([]*art.Peer, error) {
 	const logPrefix = "db SelectAllPeers "
 	peerRows, err := db.sqlDb.Query(
 		"SELECT `host`, `port`, `pubkey` FROM `peer`")
 	if err != nil {
-		fmt.Fprintf(os.Stderr, logPrefix+"Query error: %v\n", err)
+		log.Printf(logPrefix+"Query error: %v", err)
 		return nil, err
 	}
 	defer peerRows.Close()

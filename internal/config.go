@@ -1,10 +1,8 @@
 package audiostrike
 
 import (
-	//    "fmt"
 	"net"
 	"os"
-	//    "path"
 	"flag"
 	"os/user"
 	"path/filepath"
@@ -34,13 +32,15 @@ var (
 	defaultMp3Dir = filepath.Join(defaultDir, defaultMp3DirName)
 )
 
-// Config for art server
+// Config for art server.
+// These settings are specified in defaults, a config file, or the command line.
+// (Config file not yet implemented)
 type Config struct {
 	ArtistId       string
 	DbName         string
 	DbUser         string
 	DbPassword     string
-	AddMp3FileName string
+	AddMp3Filename string
 	Mp3Dir         string
 	TorProxy       string
 	PeerAddress    string
@@ -91,8 +91,9 @@ func defaultAppDir() string {
 	return "."
 }
 
-// LoadConfig will read config values from a file and use defaults for any unset values.
-// This proto version just returns the default config.
+// LoadConfig reads config values from a file and uses defaults for any unset values.
+// This pre-alpha version doesn't check for a config file but just returns the default config.
+// TODO: check for config file and load settings from there.
 func LoadConfig() (cfg *Config, err error) {
 	cfg, err = getDefaultConfig()
 	usr, err := user.Current()
@@ -128,7 +129,7 @@ func LoadConfig() (cfg *Config, err error) {
 	}
 
 	cfg.InitDb = *initDbFlag
-	cfg.AddMp3FileName = *addMp3Flag
+	cfg.AddMp3Filename = *addMp3Flag
 	cfg.PlayMp3 = *playMp3Flag
 	cfg.PeerAddress = *peerFlag
 	cfg.RunAsDaemon = *runAsDaemonFlag
