@@ -108,7 +108,7 @@ func defaultAppDir() string {
 func LoadConfig() (*Config, error) {
 	const logPrefix = "config LoadConfig "
 
-	cfg, err := getDefaultConfig()
+	cfg := getDefaultConfig()
 
 	userInputReader := bufio.NewReader(os.Stdin)
 
@@ -135,7 +135,7 @@ func LoadConfig() (*Config, error) {
 
 	// Parse command line initially to define flags and check for an alternate config file.
 	// Then parse the config file, then override any settings with command-line args.
-	_, err = flags.Parse(cfg)
+	_, err := flags.Parse(cfg)
 	if err != nil {
 		isShowingHelp := (err.(*flags.Error).Type == flags.ErrHelp)
 		if isShowingHelp {
@@ -180,14 +180,12 @@ func LoadConfig() (*Config, error) {
 	return cfg, err
 }
 
-func getDefaultConfig() (cfg *Config, err error) {
-	defaultCfg := Config{
+func getDefaultConfig() *Config {
+	return &Config{
 		ConfigFilename: defaultConfFilename,
 		DbName:         defaultDbName,
 		DbUser:         defaultDbUser,
 		Mp3Dir:         defaultMp3Dir,
 		TorProxy:       defaultTorProxy,
 	}
-	cfg = &defaultCfg
-	return
 }

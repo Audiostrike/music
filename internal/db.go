@@ -477,16 +477,16 @@ func (db *AustkDb) UpdateArtistPubkey(artistID string, pubkey string) error {
 }
 
 // PutAlbum INSERTs or UPDATEs the specified album using its artist_id and artist_album_id as the unique key
-func (db *AustkDb) PutAlbum(album art.Album) (err error) {
+func (db *AustkDb) PutAlbum(album *art.Album) (err error) {
 	_, err = db.SelectAlbum(album.ArtistId, album.ArtistAlbumId)
 	if err == sql.ErrNoRows {
-		db.sqlDb.Exec("INSERT `album`(`artist_id`, `artist_album_id`, `title`)"+
+		_, err = db.sqlDb.Exec("INSERT `album`(`artist_id`, `artist_album_id`, `title`)"+
 			" VALUES(?, ?, ?)",
 			album.ArtistId, album.ArtistAlbumId, album.Title)
 	} else if err != nil {
 		return
 	} else {
-		db.sqlDb.Exec("UPDATE `album`"+
+		_, err = db.sqlDb.Exec("UPDATE `album`"+
 			" SET `title` = ?"+
 			" WHERE `artist_id` = ? AND `artist_album_id` = ?",
 			album.Title, album.ArtistId, album.ArtistAlbumId)
