@@ -2,7 +2,6 @@ package audiostrike
 
 import (
 	"bufio"
-	"flag"
 	"fmt"
 	flags "github.com/jessevdk/go-flags"
 	"log"
@@ -41,27 +40,27 @@ var (
 // These settings are specified in defaults, a config file, or the command line.
 // (Config file not yet implemented)
 type Config struct {
-	ArtistId       string `long:"artist"`
-	ConfigFilename string `long:"config"`
-	DbName         string `long:"dbname"`
-	DbUser         string `long:"dbuser"`
-	DbPassword     string `long:"dbpass"`
-	AddMp3Filename string
+	ArtistId       string `long:"artist" description:"artist id for publishing tracks"`
+	ConfigFilename string `long:"config" description:"config file"`
+	DbName         string `long:"dbname" description:"mysql db name"`
+	DbUser         string `long:"dbuser" description:"mysql db username"`
+	DbPassword     string `long:"dbpass" description:"mysql db password"`
+	AddMp3Filename string `long:"add" description:"mp3 file to add"`
 	Mp3Dir         string
-	TorProxy       string `long:"torproxy"`
-	PeerAddress    string
+	TorProxy       string `long:"torproxy" description:"onion-routing proxy"`
+	PeerAddress    string `long:"peer" description:"audiostrike server peer to connect"`
 	Pubkey         string `long:"pubkey"`
-	RestHost       string `long:"host"`
-	RestPort       int    `long:"port"`
+	RestHost       string `long:"host" description:"ip/tor address for this audiostrike service"`
+	RestPort       int    `long:"port" description:"port where audiostrike protocol is exposed"`
 	ListenOn       string // ip address and port to listen, e.g. 0.0.0.0:53545
-	CertFilePath   string `long:"tlscert"`
-	MacaroonPath   string `long:"macaroon"`
-	LndHost        string `long:"lndhost"`
-	LndGrpcPort    int    `long:"lndport"`
+	CertFilePath   string `long:"tlscert" description:"file path for tls cert"`
+	MacaroonPath   string `long:"macaroon" description:"file path for macaroon"`
+	LndHost        string `long:"lndhost" description:"ip/onion address of lnd"`
+	LndGrpcPort    int    `long:"lndport" description:"port where lnd exposes grpc"`
 
-	InitDb      bool
-	PlayMp3     bool
-	RunAsDaemon bool `long:"daemon"`
+	InitDb      bool `long:"dbinit" description:"initialize the database (first use only)"`
+	PlayMp3     bool `long:"play" description:"play imported mp3 file (requires -file)"`
+	RunAsDaemon bool `long:"daemon" description:"run as daemon until quit signal (e.g. SIGINT)"`
 
 	Listeners     []net.Addr
 	RESTListeners []net.Addr
@@ -112,27 +111,6 @@ func LoadConfig() (*Config, error) {
 
 	userInputReader := bufio.NewReader(os.Stdin)
 
-	var configFilenameFlag = flag.String("config", cfg.ConfigFilename, "config file")
-	flag.String("artist", cfg.ArtistId, "artist id for publishing tracks")
-	flag.String("dbname", cfg.DbName, "mysql db name")
-	flag.String("dbuser", cfg.DbUser, "mysql db username")
-	flag.String("dbpass", cfg.DbPassword, "mysql db password")
-
-	flag.Bool("daemon", false, "run as daemon until quit signal (e.g. SIGINT)")
-	var peerFlag = flag.String("peer", "", "audiostrike server peer to connect")
-	flag.String("torproxy", cfg.TorProxy, "onion-routing proxy")
-
-	flag.String("host", defaultRESTHost, "ip/tor address for this audiostrike service")
-	flag.Int("port", defaultRESTPort, "port where audiostrike protocol is exposed")
-	flag.String("tlscert", defaultTLSCertPath, "file path for tls cert")
-	flag.String("lndhost", defaultLndHost, "ip/onion address of lnd")
-	flag.Int("lndport", defaultLndGrpcPort, "port where lnd exposes grpc")
-	flag.String("macaroon", defaultMacaroonPath, "file path for macaroon")
-
-	var initDbFlag = flag.Bool("dbinit", false, "initialize the database (first use only)")
-	var addMp3Flag = flag.String("add", "", "mp3 file to add, e.g. -add=1.YourTrackToServe.mp3")
-	var playMp3Flag = flag.Bool("play", false, "play imported mp3 file (requires -file)")
-
 	// Parse command line initially to define flags and check for an alternate config file.
 	// Then parse the config file, then override any settings with command-line args.
 	_, err := flags.Parse(cfg)
@@ -143,7 +121,7 @@ func LoadConfig() (*Config, error) {
 		}
 		log.Fatalf(logPrefix+"Error parsing flags: %v\n", err)
 	}
-	err = flags.IniParse(*configFilenameFlag, cfg)
+	err = flags.IniParse(cfg.ConfigFilename, cfg)
 	if err != nil {
 		log.Fatalf(logPrefix+"Error parsing config: %v", err)
 	}
@@ -172,11 +150,6 @@ func LoadConfig() (*Config, error) {
 		cfg.ArtistId = artistId
 	}
 
-	cfg.InitDb = *initDbFlag
-	cfg.AddMp3Filename = *addMp3Flag
-	cfg.PlayMp3 = *playMp3Flag
-	cfg.PeerAddress = *peerFlag
-
 	return cfg, err
 }
 
@@ -187,5 +160,7 @@ func getDefaultConfig() *Config {
 		DbUser:         defaultDbUser,
 		Mp3Dir:         defaultMp3Dir,
 		TorProxy:       defaultTorProxy,
+		RestHost:       defaultRESTHost,
+		RestPort:       defaultRESTPort,
 	}
 }

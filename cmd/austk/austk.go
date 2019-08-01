@@ -8,7 +8,6 @@ import (
 	audiostrike "github.com/audiostrike/music/internal"
 	art "github.com/audiostrike/music/pkg/art"
 	flags "github.com/jessevdk/go-flags"
-	"google.golang.org/grpc"
 )
 
 // main runs austk with config from command line, austk.config file, or defaults. `-help` for help:
@@ -87,17 +86,9 @@ func main() {
 				cfg.TorProxy, cfg.PeerAddress, err)
 		}
 
-		tracks, err := client.SyncFromPeer(db)
+		_, err = client.SyncFromPeer(db)
 		if err != nil {
 			log.Fatalf(logPrefix+"SyncFromPeer error: %v", err)
-		}
-
-		if cfg.PlayMp3 {
-			err = client.DownloadTracks(tracks, db)
-			if err != nil {
-				log.Fatalf(logPrefix+"DownloadTracks error: %v", err)
-			}
-			err = playTracks(tracks)
 		}
 
 		client.CloseConnection()
@@ -144,11 +135,14 @@ func main() {
 		}
 
 		if cfg.PlayMp3 {
+			log.Printf("playing tracks...")
 			err = client.DownloadTracks(tracks, db)
 			if err != nil {
 				log.Fatalf(logPrefix+"DownloadTracks error: %v", err)
 			}
 			err = playTracks(tracks)
+		} else {
+			log.Printf("will not play tracks")
 		}
 
 		client.CloseConnection()
@@ -200,7 +194,7 @@ func addMp3File(filename string, db *audiostrike.AustkDb) (*audiostrike.Mp3, err
 		filename, trackTitle, artistName, albumTitle, mp3.Tags)
 	if isInAlbum {
 		artistAlbumID = nameToId(albumTitle)
-		err = db.PutAlbum(art.Album{
+		err = db.PutAlbum(&art.Album{
 			ArtistId:      artistID,
 			ArtistAlbumId: artistAlbumID,
 			Title:         albumTitle,
@@ -249,8 +243,7 @@ func nameToId(name string) string {
 func startServer(cfg *audiostrike.Config, db *audiostrike.AustkDb) (s *audiostrike.ArtServer, err error) {
 	const logPrefix = "austk startServer "
 
-	opts := [...]grpc.ServerOption{}
-	s, err = audiostrike.NewServer(opts[:], cfg)
+	s, err = audiostrike.NewServer(cfg)
 	if err != nil {
 		log.Printf(logPrefix+"NewServer error: %v", err)
 		return
@@ -268,7 +261,7 @@ func startServer(cfg *audiostrike.Config, db *audiostrike.AustkDb) (s *audiostri
 		return
 	}
 
-	err = s.Start(cfg, db)
+	err = s.Start(db)
 	if err != nil {
 		log.Printf(logPrefix+"Start error: %v", err)
 	}

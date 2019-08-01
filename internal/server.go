@@ -31,7 +31,7 @@ type ArtServer struct {
 }
 
 // NewServer creates an ArtServer instance
-func NewServer(serverOpts []grpc.ServerOption, cfg *Config) (*ArtServer, error) {
+func NewServer(cfg *Config) (*ArtServer, error) {
 	const logPrefix = "server NewServer "
 	serverNameOverride := ""
 	tlsCreds, err := credentials.NewClientTLSFromFile(cfg.CertFilePath, serverNameOverride)
@@ -78,7 +78,7 @@ func NewServer(serverOpts []grpc.ServerOption, cfg *Config) (*ArtServer, error) 
 	log.Printf(logPrefix+"Signed test message, signature: %v", signMessageResult.Signature)
 
 	s := &ArtServer{
-		//grpcServer: grpc.NewServer(serverOpts...),
+		config: cfg,
 		httpServer: &http.Server{
 			Addr: "localhost",
 		},
@@ -90,24 +90,22 @@ func NewServer(serverOpts []grpc.ServerOption, cfg *Config) (*ArtServer, error) 
 }
 
 // Start the ArtServer listening for REST requests for artists in the db.
-func (s *ArtServer) Start(cfg *Config, db *AustkDb) (err error) {
+func (s *ArtServer) Start(db *AustkDb) error {
 	const logPrefix = "server Start "
 
 	s.artDb = db
-	var artists map[string]art.Artist
-	var tracks map[string]art.Track
-	artists, err = db.SelectAllArtists()
+	artists, err := db.SelectAllArtists()
 	if err != nil {
 		log.Printf(logPrefix+"db.SelectAllArtists error: %v", err)
-		return
+		return err
 	}
 	log.Printf(logPrefix+"%v artists:", len(artists))
 	for artistID, artist := range artists {
 		log.Printf(logPrefix+"\tArtist id %s: %v", artistID, artist)
-		tracks, err = db.SelectArtistTracks(artistID)
+		tracks, err := db.SelectArtistTracks(artistID)
 		if err != nil {
 			log.Printf(logPrefix+"db.SelectArtistTracks error: %v", err)
-			return
+			return err
 		}
 		for trackID, track := range tracks {
 			log.Printf("\t\tTrack id: %s: %v", trackID, track)
@@ -117,32 +115,40 @@ func (s *ArtServer) Start(cfg *Config, db *AustkDb) (err error) {
 	pubkey, err := s.Pubkey()
 	if err != nil {
 		log.Printf(logPrefix+"Pubkey retrieval error: %v", err)
-		return
+		return err
 	}
+	restHost := s.RestHost()
+	restPort := s.RestPort()
 
 	selfPeer, err := db.SelectPeer(pubkey)
 	if err == sql.ErrNoRows {
-		log.Printf(logPrefix+"Inserting peer %v:%v for %v", cfg.RestHost, cfg.RestPort, pubkey)
-		err = db.PutPeer(&art.Peer{Pubkey: pubkey, Host: cfg.RestHost, Port: uint32(cfg.RestPort)})
+		selfPeer = &art.Peer{Pubkey: pubkey, Host: restHost, Port: restPort}
 	} else if err != nil {
 		log.Printf(logPrefix+"SelectPeer %v error: %v", pubkey, err)
-		return
+		return err
 	} else {
-		log.Printf(logPrefix+"Updating peer %v:%v to %v:%v",
-			selfPeer.Host, selfPeer.Port,
-			cfg.RestHost, cfg.RestPort)
-		err = db.PutPeer(&art.Peer{Pubkey: pubkey, Host: cfg.RestHost, Port: uint32(cfg.RestPort)})
+		if selfPeer.Host != restHost {
+			log.Printf(logPrefix+"Update self peer %s host from %s to %s",
+				pubkey, selfPeer.Host, restHost)
+			selfPeer.Host = restHost
+		}
+		if selfPeer.Port != restPort {
+			log.Printf(logPrefix+"Update self peer %s port from %d to %d",
+				pubkey, selfPeer.Port, restPort)
+			selfPeer.Port = restPort
+		}
 	}
+	err = db.PutPeer(selfPeer)
 	if err != nil {
 		log.Printf(logPrefix+"PutPeer %v error: %v", pubkey, err)
-		return
+		return err
 	}
 
 	// Listen for REST requests and serve in another thread.
 	go s.serve()
-	log.Printf(logPrefix+"serving REST requests on :%d", cfg.RestPort)
+	log.Printf(logPrefix+"serving REST requests for %s on %s:%d", pubkey, restHost, restPort)
 
-	return
+	return err
 }
 
 func (server *ArtServer) serve() (err error) {
@@ -239,6 +245,14 @@ func (server *ArtServer) Pubkey() (string, error) {
 	pubkey := getInfoResponse.IdentityPubkey
 
 	return pubkey, nil
+}
+
+func (server *ArtServer) RestHost() string {
+	return server.config.RestHost
+}
+
+func (server *ArtServer) RestPort() uint32 {
+	return uint32(server.config.RestPort)
 }
 
 // WaitUntilQuitSignal waits for SIGINT (keyboard interrupt Ctrl-C) or for another reason to quit.
