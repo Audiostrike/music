@@ -11,5 +11,4 @@
 *.so
 *.test
 /admin.macaroon
-/artd
 /austk

@@ -1,7 +1,6 @@
 package audiostrike
 
 import (
-	"flag"
 	"fmt"
 	"os"
 	"testing"
@@ -10,30 +9,25 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 )
 
-var cfg *Config
+const (
+	dbName         = "test_austk"
+	dbUser         = defaultDbUser
+	dbPassword     = ""
+	torProxy       = defaultTorProxy
+)
 
 func TestMain(m *testing.M) {
 	// Get the db config.
 	var err error
-	cfg, err = LoadConfig()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to load config, error: %v\n", err)
 		os.Exit(1)
 	}
-	var (
-		dbName     = flag.String("dbname", cfg.DbName, "DB name (default: \"music\")")
-		dbUser     = flag.String("dbuser", cfg.DbUser, "DB username (default: \"artist\")")
-		dbPassword = flag.String("dbpass", cfg.DbPassword, "database password")
-	)
-	flag.Parse()
-	cfg.DbName = *dbName
-	cfg.DbUser = *dbUser
-	cfg.DbPassword = *dbPassword
 
 	// Initialize the db if it cannot be opened normally.
-	_, err = OpenDb(cfg.DbName, cfg.DbUser, cfg.DbPassword)
+	_, err = OpenDb(dbName, dbUser, dbPassword)
 	if err != nil {
-		err := InitializeDb(cfg.DbName, cfg.DbUser, cfg.DbPassword)
+		err := InitializeDb(dbName, dbUser, dbPassword)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Failed to initialize test DB, error: %v\n", err)
 		}
@@ -44,7 +38,7 @@ func TestMain(m *testing.M) {
 }
 
 func TestPutTrack(t *testing.T) {
-	db, err := OpenDb(cfg.DbName, cfg.DbUser, cfg.DbPassword)
+	db, err := OpenDb(dbName, dbUser, dbPassword)
 	if err != nil {
 		t.Errorf("Failed to connect to music DB, error %v", err)
 	}
@@ -53,72 +47,88 @@ func TestPutTrack(t *testing.T) {
 		t.Errorf("Failed to connect to music DB, error %v", err)
 	}
 	defer db.Close()
-	albumID := "test-put-track-album-id"
-	testTrackId := albumID + "-1.TestPut1"
-	count, err := db.PutTrack(art.Track{
-		Album:            albumID,
-		AlbumTrackNumber: 1,
-		Id:               testTrackId,
-		Title:            "Test Put 1"})
-	if err != nil || count == 0 {
-		t.Errorf("PutAlbumTrack failed to put track for \"%s\", error: %v", albumID, err)
+	const testArtistId = "tester"
+	const testAlbumId = "putting-tracks"
+	testTracks := []art.Track{
+		art.Track{
+			ArtistId:         testArtistId,
+			ArtistAlbumId:    testAlbumId,
+			AlbumTrackNumber: 1,
+			ArtistTrackId:    testAlbumId + "-1.TestPut1",
+			Title:            "Test Put 1"},
+		art.Track{
+			ArtistId:         testArtistId,
+			ArtistAlbumId:    testAlbumId,
+			AlbumTrackNumber: 2,
+			ArtistTrackId:    testAlbumId + "-2.TestPut2",
+			Title:            "Test Put 2"},
+		art.Track{
+			ArtistId:         testArtistId,
+			ArtistAlbumId:    testAlbumId,
+			AlbumTrackNumber: 3,
+			ArtistTrackId:    testAlbumId + "-3.TestPut3",
+			Title:            "Test Put 3"},
 	}
-	testTrackId = albumID + "-2.TestPut2"
-	count, err = db.PutTrack(art.Track{
-		Album:            albumID,
-		AlbumTrackNumber: 2,
-		Id:               testTrackId,
-		Title:            "Test Put 2"})
-	if err != nil || count == 0 {
-		t.Errorf("PutAlbumTrack failed to put track for \"%s\"", albumID)
+	for _, testTrack := range testTracks {
+		err := db.PutTrack(&testTrack)
+		if err != nil {
+			t.Errorf("PutAlbumTrack failed to put track %s for %s",
+				testTrack.ArtistTrackId, testTrack.ArtistId)
+		}
+		selectedTrack, err := db.SelectTrack(testArtistId, testTrack.ArtistTrackId)
+		if err != nil ||
+			selectedTrack.AlbumTrackNumber != testTrack.AlbumTrackNumber ||
+			selectedTrack.Title != testTrack.Title {
+			t.Errorf("PutAlbutTrack failed to select track %v, error: %v, found: %v",
+				testTrack, err, selectedTrack)
+		}
 	}
-	testTrackId = albumID + "-3.TestPut3"
-	count, err = db.PutTrack(art.Track{
-		Album:            albumID,
-		AlbumTrackNumber: 3,
-		Id:               testTrackId,
-		Title:            "Test Put 3"})
-	if err != nil || count == 0 {
-		t.Errorf("PutAlbumTrack failed to put track for \"%s\"", albumID)
-	}
-	if count != 3 {
-		t.Errorf("PutAlbumTrack failed to put 3 tracks for \"%s\", found %v", albumID, count)
-	}
-	testTrack, err := db.SelectTrack(testTrackId)
-	if err != nil || testTrack.AlbumTrackNumber != 3 {
-		t.Errorf("PutAlbutTrack failed to select track 3, error: %v, testTrack: %v", err, testTrack)
-	}
+
+	// Cleanup
+	db.DeleteAlbum(testArtistId, testAlbumId)
 }
 
 func TestDeleteAlbum(t *testing.T) {
-	db, err := OpenDb(cfg.DbName, cfg.DbUser, cfg.DbPassword)
+	db, err := OpenDb(dbName, dbUser, dbPassword)
 	if err != nil {
 		t.Errorf("Failed to open music DB, error: %v", err)
 	}
 	defer db.Close()
-	albumID := "test-delete-album-album-id"
-	count, err := db.PutTrack(art.Track{
-		Album:            albumID,
-		AlbumTrackNumber: 1,
-		Id:               albumID + "-1.SomethingToDelete",
-		Title:            "Something to Delete"})
-	if err != nil || count == 0 {
-		t.Errorf("PutAlbumTrack failed to put track for \"%s\"", albumID)
+	const testArtistId = "tester"
+	const testAlbumId = "deleting-album"
+	err = db.PutAlbum(&art.Album{
+		ArtistId: testArtistId,
+		ArtistAlbumId: testAlbumId,
+		Title:    "Test Album to Delete"})
+	if err != nil {
+		t.Errorf("PutAlbum error: %v", err)
 	}
-	tracks, err := db.SelectAlbumTracks(albumID)
+	err = db.PutTrack(&art.Track{
+		ArtistId:         testArtistId,
+		ArtistAlbumId:    testAlbumId,
+		AlbumTrackNumber: 1,
+		ArtistTrackId:    testAlbumId + "-1.SomethingToDelete",
+		Title:            "Something to Delete"})
+	if err != nil {
+		t.Errorf("PutTrack failed to put track for %s", testAlbumId)
+	}
+	tracks, err := db.SelectAlbumTracks(testArtistId, testAlbumId)
 	if err != nil || len(tracks) == 0 {
 		t.Errorf("TestDeleteAlbum failed to setup album with a track")
 	}
-	db.DeleteAlbum(albumID)
-	tracks, err = db.SelectAlbumTracks(albumID)
+	err = db.DeleteAlbum(testArtistId, testAlbumId)
+	if err != nil {
+		t.Errorf("DeleteAlbum error %v", err)
+	}
+	tracks, err = db.SelectAlbumTracks(testArtistId, testAlbumId)
 	if err != nil || len(tracks) != 0 {
-		t.Errorf("TestDeleteAlbum failed to delete album %v", albumID)
+		t.Errorf("TestDeleteAlbum failed to delete album %v", testAlbumId)
 	}
 }
 
 func TestGetAlbumTracks(t *testing.T) {
 	// Test album with known id
-	db, err := OpenDb(cfg.DbName, cfg.DbUser, cfg.DbPassword)
+	db, err := OpenDb(dbName, dbUser, dbPassword)
 	if err != nil {
 		t.Errorf("Failed to open music DB, error: %v", err)
 	}
@@ -127,17 +137,28 @@ func TestGetAlbumTracks(t *testing.T) {
 		t.Errorf("Failed to ping music DB, error %v", err)
 	}
 	defer db.Close()
-	albumID := "test-get-album-tracks-album-id"
-	count, err := db.PutTrack(art.Track{
-		Album:            albumID,
+
+	const (
+		testArtistId = "tester"
+		testAlbumId  = "test-get-album-tracks-album-id"
+	)
+
+	err = db.PutTrack(&art.Track{
+		ArtistId:         testArtistId,
+		ArtistAlbumId:    testAlbumId,
 		AlbumTrackNumber: 1,
-		Id:               albumID + "-1.SomethingToGet",
+		ArtistTrackId:    testAlbumId + "-1.SomethingToGet",
 		Title:            "Something to Get"})
-	if err != nil || count == 0 {
-		t.Errorf("PutTrack failed to put track for \"%s\"", albumID)
+	if err != nil {
+		t.Errorf("PutTrack failed to put track for \"%s\"", testAlbumId)
 	}
-	tracks, err := db.SelectAlbumTracks(albumID)
+
+	// Check the db for the track.
+	tracks, err := db.SelectAlbumTracks(testArtistId, testAlbumId)
 	if err != nil || len(tracks) == 0 {
-		t.Errorf("GetAlbumTracks failed to get tracks for \"%s\", got only %v", albumID, tracks)
+		t.Errorf("GetAlbumTracks failed to get tracks for \"%s\", got only %v", testAlbumId, tracks)
 	}
+
+	// Cleanup
+	db.DeleteAlbum(testArtistId, testAlbumId)
 }

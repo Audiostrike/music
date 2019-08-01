@@ -119,25 +119,29 @@ func mkDirectoriesForTrack(artistId string, artistTrackId string) error {
 
 	dirPath := fmt.Sprintf("./tracks")
 	err := os.Mkdir(dirPath, 0777)
-	if err != nil {
-		// If directory already exists, swallow this error.
+	if err != nil && os.IsExist(err.(*os.PathError).Err) {
+		// Directory already exists. Swallow this error.
+	} else if err != nil {
 		log.Printf(logPrefix+"Mkdir ./tracks error: %v", err)
-		// TODO: fail more loudly if a different type of error prevents saving tracks.
+		return err
 	}
 
 	dirPath = fmt.Sprintf("./tracks/%s", artistId)
 	err = os.Mkdir(dirPath, 0777)
-	if err != nil {
-		// If directory already exists, swallow this error.
+	if err != nil && os.IsExist(err.(*os.PathError).Err) {
+		// Directory already exists. Swallow this error.
+	} else if err != nil {
 		log.Printf(logPrefix+"Mkdir ./tracks/%s error: %v", artistId, err)
-		// TODO: fail more loudly if a different type of error prevents saving tracks.
+		return err
 	}
 
 	pathComponents := strings.Split(artistTrackId, "/")
 	for _, pathComponent := range pathComponents[:len(pathComponents)-1] {
 		dirPath = dirPath + "/" + pathComponent
 		err = os.Mkdir(dirPath, 0777)
-		if err != nil {
+		if err != nil && os.IsExist(err.(*os.PathError).Err) {
+			// Directory already exists. Swallow this error.
+		} else if err != nil {
 			log.Printf(logPrefix+"Mkdir %s error: %v", dirPath, err)
 		}
 	}

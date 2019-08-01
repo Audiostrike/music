@@ -1,18 +1,22 @@
 package audiostrike
 
 import (
+	"bufio"
+	"fmt"
+	flags "github.com/jessevdk/go-flags"
+	"log"
 	"net"
 	"os"
-	"flag"
 	"os/user"
 	"path/filepath"
 	"runtime"
+	"strings"
 )
 
 const (
-	defaultDbName       = "music"
+	defaultConfFilename = "austk.conf"
+	defaultDbName       = "austk"
 	defaultDbUser       = "audiostrike"
-	defaultDbPassword   = "ChangeThisToThePasswordForYourDbUser"
 	defaultRESTHost     = "localhost"
 	defaultRESTPort     = 53545 // 0xd129 from Unicode symbol 0x1d129 for multi-measure rest
 	defaultRPCPort      = 53308 // 0xd03c from Unicode symbol 0x1d03c for Byzantine musical symbol rapisma
@@ -36,19 +40,27 @@ var (
 // These settings are specified in defaults, a config file, or the command line.
 // (Config file not yet implemented)
 type Config struct {
-	ArtistId       string
-	DbName         string
-	DbUser         string
-	DbPassword     string
-	AddMp3Filename string
+	ArtistId       string `long:"artist" description:"artist id for publishing tracks"`
+	ConfigFilename string `long:"config" description:"config file"`
+	DbName         string `long:"dbname" description:"mysql db name"`
+	DbUser         string `long:"dbuser" description:"mysql db username"`
+	DbPassword     string `long:"dbpass" description:"mysql db password"`
+	AddMp3Filename string `long:"add" description:"mp3 file to add"`
 	Mp3Dir         string
-	TorProxy       string
-	PeerAddress    string
+	TorProxy       string `long:"torproxy" description:"onion-routing proxy"`
+	PeerAddress    string `long:"peer" description:"audiostrike server peer to connect"`
+	Pubkey         string `long:"pubkey"`
+	RestHost       string `long:"host" description:"ip/tor address for this audiostrike service"`
+	RestPort       int    `long:"port" description:"port where audiostrike protocol is exposed"`
 	ListenOn       string // ip address and port to listen, e.g. 0.0.0.0:53545
+	CertFilePath   string `long:"tlscert" description:"file path for tls cert"`
+	MacaroonPath   string `long:"macaroon" description:"file path for macaroon"`
+	LndHost        string `long:"lndhost" description:"ip/onion address of lnd"`
+	LndGrpcPort    int    `long:"lndport" description:"port where lnd exposes grpc"`
 
-	InitDb      bool
-	PlayMp3     bool
-	RunAsDaemon bool
+	InitDb      bool `long:"dbinit" description:"initialize the database (first use only)"`
+	PlayMp3     bool `long:"play" description:"play imported mp3 file (requires -file)"`
+	RunAsDaemon bool `long:"daemon" description:"run as daemon until quit signal (e.g. SIGINT)"`
 
 	Listeners     []net.Addr
 	RESTListeners []net.Addr
@@ -91,61 +103,64 @@ func defaultAppDir() string {
 	return "."
 }
 
-// LoadConfig reads config values from a file and uses defaults for any unset values.
-// This pre-alpha version doesn't check for a config file but just returns the default config.
-// TODO: check for config file and load settings from there.
-func LoadConfig() (cfg *Config, err error) {
-	cfg, err = getDefaultConfig()
-	usr, err := user.Current()
-	if err == nil {
-		cfg.ArtistId = usr.Username
-	}
-	var (
-		dbNameFlag      = flag.String("dbname", cfg.DbName, "mysql db name")
-		dbUserFlag      = flag.String("dbuser", cfg.DbUser, "mysql db username")
-		dbPasswordFlag  = flag.String("dbpass", cfg.DbPassword, "mysql db password")
-		initDbFlag      = flag.Bool("dbinit", false, "initialize the database (first use only)")
-		artistIdFlag    = flag.String("artist", cfg.ArtistId, "artist id for publishing tracks")
-		addMp3Flag      = flag.String("add", "", "mp3 file to add, e.g. -add=1.YourTrackToServe.mp3")
-		playMp3Flag     = flag.Bool("play", false, "play imported mp3 file (requires -file)")
-		runAsDaemonFlag = flag.Bool("daemon", false, "run as daemon until quit signal (e.g. SIGINT)")
-		peerFlag        = flag.String("peer", "", "audiostrike server peer to connect")
-		torProxyFlag    = flag.String("torproxy", cfg.TorProxy, "onion-routing proxy")
-	)
-	flag.Parse()
+// LoadConfig reads each config value from command line or config file or defaults.
+func LoadConfig() (*Config, error) {
+	const logPrefix = "config LoadConfig "
 
-	if *dbNameFlag != "" {
-		cfg.DbName = *dbNameFlag
+	cfg := getDefaultConfig()
+
+	userInputReader := bufio.NewReader(os.Stdin)
+
+	// Parse command line initially to define flags and check for an alternate config file.
+	// Then parse the config file, then override any settings with command-line args.
+	_, err := flags.Parse(cfg)
+	if err != nil {
+		isShowingHelp := (err.(*flags.Error).Type == flags.ErrHelp)
+		if isShowingHelp {
+			return cfg, err
+		}
+		log.Fatalf(logPrefix+"Error parsing flags: %v\n", err)
 	}
-	if *dbUserFlag != "" {
-		cfg.DbUser = *dbUserFlag
+	err = flags.IniParse(cfg.ConfigFilename, cfg)
+	if err != nil {
+		log.Fatalf(logPrefix+"Error parsing config: %v", err)
 	}
-	if *dbPasswordFlag != "" {
-		cfg.DbPassword = *dbPasswordFlag
+	flags.Parse(cfg)
+
+	// The artist should configure ArtistId by specifying the `artist` flag in austk.config,
+	// or in an alternate config file specified by -config, or by command-line flag `-artist`.
+	if cfg.ArtistId == "" {
+		// Artist id is not configured or specified so ask the artist for an id.
+		fmt.Printf(
+			"Please specify your artist id.\n" +
+				"Use your public name/identity spelled in lowercase " +
+				" with no punctuation or spaces (for example, alicetheartist): ")
+		inputArtistId, err := userInputReader.ReadString('\n')
+		if err != nil {
+			log.Printf(logPrefix+"Error reading ArtistId from stdin: %v", err)
+			return cfg, err
+		}
+		artistId := strings.Replace(inputArtistId, "\n", "", 1)
+		artistId = strings.ReplaceAll(artistId, " ", "")
+		// TODO: strip other whitespace, punctuation, etc.
+		artistId = strings.ToLower(artistId)
+		if artistId == "" {
+			log.Fatalf(logPrefix + "No artist id. Specify your artist id to publish your music.")
+		}
+		cfg.ArtistId = artistId
 	}
 
-	if *artistIdFlag != "" {
-		cfg.ArtistId = *artistIdFlag
-	}
-
-	cfg.InitDb = *initDbFlag
-	cfg.AddMp3Filename = *addMp3Flag
-	cfg.PlayMp3 = *playMp3Flag
-	cfg.PeerAddress = *peerFlag
-	cfg.RunAsDaemon = *runAsDaemonFlag
-	cfg.TorProxy = *torProxyFlag
-
-	return
+	return cfg, err
 }
 
-func getDefaultConfig() (cfg *Config, err error) {
-	defaultCfg := Config{
-		DbName:     defaultDbName,
-		DbUser:     defaultDbUser,
-		DbPassword: defaultDbPassword,
-		Mp3Dir:     defaultMp3Dir,
-		TorProxy:   defaultTorProxy,
+func getDefaultConfig() *Config {
+	return &Config{
+		ConfigFilename: defaultConfFilename,
+		DbName:         defaultDbName,
+		DbUser:         defaultDbUser,
+		Mp3Dir:         defaultMp3Dir,
+		TorProxy:       defaultTorProxy,
+		RestHost:       defaultRESTHost,
+		RestPort:       defaultRESTPort,
 	}
-	cfg = &defaultCfg
-	return
 }

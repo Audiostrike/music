@@ -7,7 +7,7 @@ import (
 
 	audiostrike "github.com/audiostrike/music/internal"
 	art "github.com/audiostrike/music/pkg/art"
-	"google.golang.org/grpc"
+	flags "github.com/jessevdk/go-flags"
 )
 
 // main runs austk with config from command line, austk.config file, or defaults. `-help` for help:
@@ -48,6 +48,10 @@ func main() {
 
 	cfg, err := audiostrike.LoadConfig()
 	if err != nil {
+		isShowingHelp := (err.(*flags.Error).Type == flags.ErrHelp)
+		if isShowingHelp {
+			return
+		}
 		log.Fatalf(logPrefix+"LoadConfig error: %v", err)
 	}
 
@@ -81,32 +85,70 @@ func main() {
 			log.Fatalf(logPrefix+"NewClient via torProxy %v to peerAddress %v, error: %v",
 				cfg.TorProxy, cfg.PeerAddress, err)
 		}
-		defer client.CloseConnection()
 
-		tracks, err := client.SyncFromPeer(db)
+		_, err = client.SyncFromPeer(db)
 		if err != nil {
 			log.Fatalf(logPrefix+"SyncFromPeer error: %v", err)
 		}
 
-		if cfg.PlayMp3 {
-			err = client.DownloadTracks(tracks, db)
-			if err != nil {
-				log.Fatalf(logPrefix+"DownloadTracks error: %v", err)
-			}
-			err = playTracks(tracks)
-		}
+		client.CloseConnection()
 	}
 
-	// TODO: sync with each peer from DB
-
+	var server *audiostrike.ArtServer
 	if cfg.RunAsDaemon {
 		log.Println(logPrefix + "Starting Audiostrike server...")
-		server, err := startServer(cfg.ArtistId, db)
+		server, err := startServer(cfg, db)
 		if err != nil {
 			log.Fatalf(logPrefix+"startServer daemon error: %v", err)
 		}
 		defer server.Stop()
 
+		cfg.Pubkey, err = server.Pubkey()
+		if err != nil {
+			log.Fatalf(logPrefix+"error getting server pubkey: %v", err)
+		}
+	}
+
+	peers, err := db.SelectAllPeers()
+	if err != nil {
+		log.Printf(logPrefix+"SelectAllPeers error: %v", err)
+	}
+	for _, peer := range peers {
+		if peer.Pubkey == cfg.Pubkey {
+			log.Printf(logPrefix+"skip sync from self pubkey %v", peer)
+			continue // to next peer since we sync'ed this one above.
+			// Could simplify by adding entry above and sync'ing here.
+		}
+		log.Printf(logPrefix+"sync from peer %v", peer)
+		peerAddress := fmt.Sprintf("%s:%d", peer.Host, peer.Port)
+		client, err := audiostrike.NewClient(cfg.TorProxy, peerAddress)
+		if err != nil {
+			log.Fatalf(logPrefix+"NewClient via torProxy %v to peerAddress %v, error: %v",
+				cfg.TorProxy, peer.Host, err)
+		}
+
+		tracks, err := client.SyncFromPeer(db)
+		if err != nil {
+			// Log misbehaving peer but continue with other peers.
+			log.Printf(logPrefix+"SyncFromPeer error: %v", err)
+			continue
+		}
+
+		if cfg.PlayMp3 {
+			log.Printf("playing tracks...")
+			err = client.DownloadTracks(tracks, db)
+			if err != nil {
+				log.Fatalf(logPrefix+"DownloadTracks error: %v", err)
+			}
+			err = playTracks(tracks)
+		} else {
+			log.Printf("will not play tracks")
+		}
+
+		client.CloseConnection()
+	}
+
+	if cfg.RunAsDaemon {
 		// Execution will stop in this function until server quits from SIGINT etc.
 		server.WaitUntilQuitSignal()
 	}
@@ -152,7 +194,7 @@ func addMp3File(filename string, db *audiostrike.AustkDb) (*audiostrike.Mp3, err
 		filename, trackTitle, artistName, albumTitle, mp3.Tags)
 	if isInAlbum {
 		artistAlbumID = nameToId(albumTitle)
-		err = db.PutAlbum(art.Album{
+		err = db.PutAlbum(&art.Album{
 			ArtistId:      artistID,
 			ArtistAlbumId: artistAlbumID,
 			Title:         albumTitle,
@@ -198,11 +240,10 @@ func nameToId(name string) string {
 
 // startServer sets the configured artist to use the lnd server and starts running as a daemon
 // until SIGINT (ctrl-c or `kill`) is received.
-func startServer(artistID string, db *audiostrike.AustkDb) (s *audiostrike.ArtServer, err error) {
+func startServer(cfg *audiostrike.Config, db *audiostrike.AustkDb) (s *audiostrike.ArtServer, err error) {
 	const logPrefix = "austk startServer "
 
-	opts := [...]grpc.ServerOption{}
-	s, err = audiostrike.NewServer(opts[:])
+	s, err = audiostrike.NewServer(cfg)
 	if err != nil {
 		log.Printf(logPrefix+"NewServer error: %v", err)
 		return
@@ -214,9 +255,9 @@ func startServer(artistID string, db *audiostrike.AustkDb) (s *audiostrike.ArtSe
 		log.Printf(logPrefix+"s.Pubkey error: %v", err)
 		return
 	}
-	err = db.UpdateArtistPubkey(artistID, pubkey)
+	err = db.UpdateArtistPubkey(cfg.ArtistId, pubkey)
 	if err != nil {
-		log.Printf(logPrefix+"db.SetPubkeyForArtist %v, error: %v", artistID, err)
+		log.Printf(logPrefix+"db.SetPubkeyForArtist %v, error: %v", cfg.ArtistId, err)
 		return
 	}
 
