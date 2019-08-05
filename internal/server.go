@@ -20,7 +20,7 @@ import (
 	"log"
 )
 
-// ArtServer stores art data for this austk node.
+// ArtServer is a repository to store/serve music and related data for this austk node.
 // Implementations may use a database, file system, test fixture, etc.
 type ArtServer interface {
 	Albums(artistId string) (map[string]art.Album, error)
@@ -91,7 +91,7 @@ func NewServer(cfg *Config, db *AustkDb) (*Server, error) {
 	log.Printf(logPrefix+"Signed test message, signature: %v", signMessageResult.Signature)
 
 	log.Printf("artDb: %v", db)
-	dbServer := newDbServer(db)
+	dbServer := NewDbServer(db)
 	return &Server{
 		artServer: dbServer,
 		config:    cfg,
@@ -102,46 +102,6 @@ func NewServer(cfg *Config, db *AustkDb) (*Server, error) {
 		lndClient:   lndClient,
 		quitChannel: make(chan bool),
 	}, nil
-}
-
-type dbServer struct {
-	db *AustkDb
-}
-
-func (dbServer dbServer) Albums(artistId string) (map[string]art.Album, error) {
-	return dbServer.db.SelectArtistAlbums(artistId)
-}
-
-func (dbServer dbServer) Artists() (map[string]art.Artist, error) {
-	return dbServer.db.SelectAllArtists()
-}
-
-func (dbServer dbServer) Tracks(artistID string) (map[string]art.Track, error) {
-	return dbServer.db.SelectArtistTracks(artistID)
-}
-
-func (dbServer dbServer) Peer(pubkey string) (*art.Peer, error) {
-	return dbServer.db.SelectPeer(pubkey)
-}
-
-func (dbServer dbServer) Peers() ([]*art.Peer, error) {
-	return dbServer.db.SelectAllPeers()
-}
-
-func (dbServer dbServer) SetArtist(artist *art.Artist) error {
-	return dbServer.db.PutArtist(artist)
-}
-
-func (dbServer dbServer) SetPeer(peer *art.Peer) error {
-	return dbServer.db.PutPeer(peer)
-}
-
-func (dbServer dbServer) Track(artistId string, trackId string) (*art.Track, error) {
-	return dbServer.db.SelectTrack(artistId, trackId)
-}
-
-func newDbServer(db *AustkDb) dbServer {
-	return dbServer{db: db}
 }
 
 // Start the Server listening for REST requests for artists in the db.

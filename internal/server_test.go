@@ -20,8 +20,8 @@ func TestGetAllArt(t *testing.T) {
 		DbName:       "music",
 		DbUser:       defaultDbUser,
 		DbPassword:   "2jV@.UXg2$1f",
-		CertFilePath: "/home/rod/.lnd/tls.cert",
-		MacaroonPath: "/home/rod/.lnd/data/chain/bitcoin/mainnet/admin.macaroon",
+		CertFilePath: "tls.cert",
+		MacaroonPath: "test.macaroon",
 		LndHost:      "127.0.0.1",
 		LndGrpcPort:  10009,
 	}
