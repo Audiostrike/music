@@ -1,6 +1,7 @@
 package audiostrike
 
 import (
+	"database/sql"
 	art "github.com/audiostrike/music/pkg/art"
 	"log"
 )
@@ -32,7 +33,11 @@ func (dbServer DbServer) Peer(pubkey string) (*art.Peer, error) {
 }
 
 func (dbServer DbServer) Peers() ([]*art.Peer, error) {
-	return dbServer.db.SelectAllPeers()
+	peers, err := dbServer.db.SelectAllPeers()
+	if err == sql.ErrNoRows {
+		return nil, ErrPeerNotFound
+	}
+	return peers, err
 }
 
 func (dbServer DbServer) SetArtist(artist *art.Artist) error {
@@ -46,4 +51,3 @@ func (dbServer DbServer) SetPeer(peer *art.Peer) error {
 func (dbServer DbServer) Track(artistId string, trackId string) (*art.Track, error) {
 	return dbServer.db.SelectTrack(artistId, trackId)
 }
-

@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"os"
 
-	"database/sql"
 	art "github.com/audiostrike/music/pkg/art"
 	"github.com/golang/protobuf/proto"
 	"github.com/gorilla/mux"
@@ -18,6 +17,7 @@ import (
 	"google.golang.org/grpc/credentials"
 	"gopkg.in/macaroon.v2"
 	"log"
+	"errors"
 )
 
 // ArtServer is a repository to store/serve music and related data for this austk node.
@@ -33,8 +33,13 @@ type ArtServer interface {
 	Track(artistId string, trackId string) (*art.Track, error)
 }
 
+var (
+	ErrArtNotFound = errors.New("ArtServer has no such art")
+	ErrPeerNotFound = errors.New("AustkServer has no such peer")
+)
+
 // Server hosts the configured artist's art for http/tor clients who might pay the lnd node.
-type Server struct {
+type AustkServer struct {
 	config      *Config
 	artServer   ArtServer // interface for storing art in a file system, database, or test mock
 	httpServer  *http.Server
@@ -43,8 +48,8 @@ type Server struct {
 	quitChannel chan bool
 }
 
-// NewServer creates a new network Server to serve the configured artist's art.
-func NewServer(cfg *Config, db *AustkDb) (*Server, error) {
+// NewAustkServer creates a new network Server to serve the configured artist's art.
+func NewAustkServer(cfg *Config, artServer ArtServer) (*AustkServer, error) {
 	const logPrefix = "server NewServer "
 	serverNameOverride := ""
 	tlsCreds, err := credentials.NewClientTLSFromFile(cfg.CertFilePath, serverNameOverride)
@@ -90,10 +95,8 @@ func NewServer(cfg *Config, db *AustkDb) (*Server, error) {
 	}
 	log.Printf(logPrefix+"Signed test message, signature: %v", signMessageResult.Signature)
 
-	log.Printf("artDb: %v", db)
-	dbServer := NewDbServer(db)
-	return &Server{
-		artServer: dbServer,
+	return &AustkServer{
+		artServer: artServer,
 		config:    cfg,
 		httpServer: &http.Server{
 			Addr: "localhost",
@@ -104,13 +107,13 @@ func NewServer(cfg *Config, db *AustkDb) (*Server, error) {
 	}, nil
 }
 
-// Start the Server listening for REST requests for artists in the db.
-func (s *Server) Start() error {
-	const logPrefix = "server Start "
+// Start the AustkServer listening for REST austk requests for art.
+func (s *AustkServer) Start() error {
+	const logPrefix = "AustkServer Start "
 
 	artists, err := s.artServer.Artists()
 	if err != nil {
-		log.Printf(logPrefix+"db.SelectAllArtists error: %v", err)
+		log.Printf(logPrefix+"artServer.Artists error: %v", err)
 		return err
 	}
 	log.Printf(logPrefix+"%v artists:", len(artists))
@@ -118,7 +121,7 @@ func (s *Server) Start() error {
 		log.Printf(logPrefix+"\tArtist id %s: %v", artistID, artist)
 		tracks, err := s.artServer.Tracks(artistID)
 		if err != nil {
-			log.Printf(logPrefix+"db.SelectArtistTracks error: %v", err)
+			log.Printf(logPrefix+"artServer.Tracks error: %v", err)
 			return err
 		}
 		for trackID, track := range tracks {
@@ -126,6 +129,7 @@ func (s *Server) Start() error {
 		}
 	}
 
+	// Publish this austk node as the Peer with this server's Pubkey.
 	pubkey, err := s.Pubkey()
 	if err != nil {
 		log.Printf(logPrefix+"Pubkey retrieval error: %v", err)
@@ -135,10 +139,11 @@ func (s *Server) Start() error {
 	restPort := s.RestPort()
 
 	selfPeer, err := s.artServer.Peer(pubkey)
-	if err == sql.ErrNoRows {
+	if err == ErrPeerNotFound {
 		selfPeer = &art.Peer{Pubkey: pubkey, Host: restHost, Port: restPort}
+		log.Printf(logPrefix+"insert selfPeer: %v", selfPeer)
 	} else if err != nil {
-		log.Printf(logPrefix+"SelectPeer %v error: %v", pubkey, err)
+		log.Printf(logPrefix+"artServer.Peer(%v) error: %v", pubkey, err)
 		return err
 	} else {
 		if selfPeer.Host != restHost {
@@ -165,7 +170,8 @@ func (s *Server) Start() error {
 	return err
 }
 
-func (server *Server) serve() (err error) {
+// serve starts listening for and handling requests to austk endpoints.
+func (server *AustkServer) serve() (err error) {
 	const logPrefix = "server serve "
 	httpRouter := mux.NewRouter()
 	httpRouter.HandleFunc("/artist/{id}", server.putArtistHandler).Methods("PUT")
@@ -180,7 +186,8 @@ func (server *Server) serve() (err error) {
 	return
 }
 
-func (server *Server) getAllArtHandler(w http.ResponseWriter, req *http.Request) {
+// getAllArtHandler handles a request to get all the art from the ArtService.
+func (server *AustkServer) getAllArtHandler(w http.ResponseWriter, req *http.Request) {
 	const logPrefix = "server getAllArtHandler "
 	// TODO: read any predicates from req to filter results
 	// for price (per track, per minute, or per byte),
@@ -202,7 +209,7 @@ func (server *Server) getAllArtHandler(w http.ResponseWriter, req *http.Request)
 		artistArray = append(artistArray, &artistCopy)
 		tracks, err := server.artServer.Tracks(artist.ArtistId)
 		if err != nil {
-			log.Printf(logPrefix+"SelectAllTracks error: %v", err)
+			log.Printf(logPrefix+"artServer.Tracks error: %v", err)
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
@@ -249,7 +256,9 @@ func (server *Server) getAllArtHandler(w http.ResponseWriter, req *http.Request)
 	w.Write(data)
 }
 
-func (server *Server) Pubkey() (string, error) {
+// Pubkey returns the pubkey for the lnd server,
+// which clients can use to authenticate publications from this node.
+func (server *AustkServer) Pubkey() (string, error) {
 	ctx := context.Background()
 	getInfoRequest := lnrpc.GetInfoRequest{}
 	getInfoResponse, err := server.lndClient.GetInfo(ctx, &getInfoRequest)
@@ -261,16 +270,18 @@ func (server *Server) Pubkey() (string, error) {
 	return pubkey, nil
 }
 
-func (server *Server) RestHost() string {
+// RestHost returns the tor address or ip address of this austk node.
+func (server *AustkServer) RestHost() string {
 	return server.config.RestHost
 }
 
-func (server *Server) RestPort() uint32 {
+// RestPort returns the tcp/ip port where this austk node listens for requests and serves art.
+func (server *AustkServer) RestPort() uint32 {
 	return uint32(server.config.RestPort)
 }
 
 // WaitUntilQuitSignal waits for SIGINT (keyboard interrupt Ctrl-C) or for another reason to quit.
-func (server *Server) WaitUntilQuitSignal() {
+func (server *AustkServer) WaitUntilQuitSignal() {
 	// Run a new thread to watch for a signal to quit.
 	go func() {
 		sigintKeyboardInterruptChannel := make(chan os.Signal, 1)
@@ -288,18 +299,21 @@ func (server *Server) WaitUntilQuitSignal() {
 }
 
 // Stop the Server
-func (server *Server) Stop() error {
+func (server *AustkServer) Stop() error {
 	server.quitChannel <- true
 	return nil
 }
 
-func (server *Server) putArtistHandler(w http.ResponseWriter, req *http.Request) {
+// putArtistHandler handles a request to put an artist into the ArtService.
+func (server *AustkServer) putArtistHandler(w http.ResponseWriter, req *http.Request) {
+	const logPrefix = "AustkServer putArtistHandler "
+	
 	requestVars := mux.Vars(req)
 	decoder := json.NewDecoder(req.Body)
 	var artist art.Artist
 	err := decoder.Decode(&artist)
 	if err != nil {
-		log.Printf("Failed to decode artist from request, error: %v", err)
+		log.Printf(logPrefix+"Failed to decode artist from request, error: %v", err)
 		w.WriteHeader(http.StatusBadRequest)
 		// Should intelligible peers be notified, muted, or disconnected?
 		return
@@ -312,12 +326,13 @@ func (server *Server) putArtistHandler(w http.ResponseWriter, req *http.Request)
 	go func() {
 		err = server.artServer.SetArtist(&artist)
 		if err != nil {
-			log.Printf("Failed to put artist into DB, error: %v", err)
+			log.Printf(logPrefix+"Failed to put artist, error: %v", err)
 		}
 	}()
 }
 
-func (server *Server) getArtHandler(w http.ResponseWriter, req *http.Request) {
+// getArtHandler handles requests to get a specified track by a specified artist.
+func (server *AustkServer) getArtHandler(w http.ResponseWriter, req *http.Request) {
 	const logPrefix = "server getArtHandler "
 
 	artistId := mux.Vars(req)["artist"]
@@ -331,7 +346,7 @@ func (server *Server) getArtHandler(w http.ResponseWriter, req *http.Request) {
 
 	_, err := server.artServer.Track(artistId, trackId)
 	if err != nil {
-		// TODO: if requested track isn't in the db, error with 404 Not Found
+		// TODO: if requested track isn't found, error with 404 Not Found
 		log.Printf(logPrefix+"failed to select track, error: %v", err)
 		w.WriteHeader(http.StatusInternalServerError)
 		return
@@ -356,36 +371,4 @@ func (server *Server) getArtHandler(w http.ResponseWriter, req *http.Request) {
 	log.Printf(logPrefix+"serving track as %d bytes of data", len(trackData))
 	w.WriteHeader(http.StatusOK)
 	w.Write(trackData)
-}
-
-// GetArt returns an ArtReply with all known art
-func (s *Server) GetArt(context context.Context, artRequest *art.ArtRequest) (artReply *art.ArtReply, err error) {
-	artists, err := s.artServer.Artists()
-	if err != nil {
-		return nil, err
-	}
-	artistArray := make([]*art.Artist, 0, len(artists))
-	albumsArray := make([]*art.Album, 0)
-	tracksArray := make([]*art.Track, 0)
-	for _, artist := range artists {
-		artistArray = append(artistArray, &artist)
-		albums, err := s.artServer.Albums(artist.ArtistId)
-		if err != nil {
-			return nil, err
-		}
-		for _, album := range albums {
-			albumsArray = append(albumsArray, &album)
-		}
-	}
-	peersArray, err := s.artServer.Peers()
-	if err != nil {
-		return nil, err
-	}
-	reply := &art.ArtReply{
-		Artists: artistArray,
-		Albums:  albumsArray,
-		Tracks:  tracksArray,
-		Peers:   peersArray,
-	}
-	return reply, err
 }

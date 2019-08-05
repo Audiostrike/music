@@ -94,7 +94,7 @@ func main() {
 		client.CloseConnection()
 	}
 
-	var server *audiostrike.Server
+	var server *audiostrike.AustkServer
 	if cfg.RunAsDaemon {
 		log.Println(logPrefix + "Starting Audiostrike server...")
 		server, err := startServer(cfg, db)
@@ -240,10 +240,11 @@ func nameToId(name string) string {
 
 // startServer sets the configured artist to use the lnd server and starts running as a daemon
 // until SIGINT (ctrl-c or `kill`) is received.
-func startServer(cfg *audiostrike.Config, db *audiostrike.AustkDb) (s *audiostrike.Server, err error) {
+func startServer(cfg *audiostrike.Config, db *audiostrike.AustkDb) (s *audiostrike.AustkServer, err error) {
 	const logPrefix = "austk startServer "
 
-	s, err = audiostrike.NewServer(cfg, db)
+	artServer := injectArtServer(db)
+	s, err = audiostrike.NewAustkServer(cfg, artServer)
 	if err != nil {
 		log.Printf(logPrefix+"NewServer error: %v", err)
 		return

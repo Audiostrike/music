@@ -179,7 +179,7 @@ func (client *Client) GetAllArtByTor() (*art.ArtReply, error) {
 
 // GetTrackByTor gets the track (mp3 bytes by http over tor) with artistTrackId by the artist with artistId.
 func (client *Client) GetTrackByTor(artistId string, artistTrackId string) ([]byte, error) {
-	const logPrefix = "client GetArtByTor "
+	const logPrefix = "client GetTrackByTor "
 	
 	trackUrl := fmt.Sprintf("http://%s/art/%s/%s",
 		client.peerAddress, artistId, artistTrackId)
