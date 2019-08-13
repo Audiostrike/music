@@ -599,7 +599,7 @@ func (db *AustkDb) SelectAlbum(artistID string, albumID string) (*art.Album, err
 }
 
 // SelectAlbum returns the metadata of the db album for the given artist with the given albumID
-func (db *AustkDb) SelectArtistAlbums(artistID string) (map[string]*art.Album, error) {
+func (db *AustkDb) SelectArtistAlbums(artistID string) (map[string]art.Album, error) {
 	albumRows, err := db.sqlDb.Query(
 		"SELECT `artist_album_id`, `title`"+
 			" FROM `album`"+
@@ -609,7 +609,7 @@ func (db *AustkDb) SelectArtistAlbums(artistID string) (map[string]*art.Album, e
 		return nil, err
 	}
 	defer albumRows.Close()
-	albums := make(map[string]*art.Album)
+	albums := make(map[string]art.Album)
 	var (
 		artistAlbumID string
 		title         string
@@ -619,7 +619,7 @@ func (db *AustkDb) SelectArtistAlbums(artistID string) (map[string]*art.Album, e
 		if err != nil {
 			return nil, err
 		}
-		albums[artistAlbumID] = &art.Album{
+		albums[artistAlbumID] = art.Album{
 			ArtistId:      artistID,
 			ArtistAlbumId: artistAlbumID,
 			Title:         title,
@@ -661,7 +661,7 @@ func (db *AustkDb) SelectAllPeers() ([]*art.Peer, error) {
 }
 
 // SelectTrack returns the metadata of the db track for the given artist with the given trackID
-func (db *AustkDb) SelectTrack(artistID string, artistTrackID string) (track art.Track, err error) {
+func (db *AustkDb) SelectTrack(artistID string, artistTrackID string) (*art.Track, error) {
 	trackRow := db.sqlDb.QueryRow(
 		"SELECT `title`, `artist_album_id`, `album_track_num`"+
 			" FROM `track`"+
@@ -672,16 +672,15 @@ func (db *AustkDb) SelectTrack(artistID string, artistTrackID string) (track art
 		artistAlbumID string
 		albumTrackNum uint
 	)
-	err = trackRow.Scan(&title, &artistAlbumID, &albumTrackNum)
+	err := trackRow.Scan(&title, &artistAlbumID, &albumTrackNum)
 	if err != nil {
-		return
+		return nil, err
 	}
-	track = art.Track{
+	return &art.Track{
 		ArtistId:         artistID,
 		ArtistTrackId:    artistTrackID,
 		Title:            title,
 		ArtistAlbumId:    artistAlbumID,
 		AlbumTrackNumber: uint32(albumTrackNum),
-	}
-	return
+	}, nil
 }
