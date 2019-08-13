@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 
+	"errors"
 	art "github.com/audiostrike/music/pkg/art"
 	"github.com/golang/protobuf/proto"
 	"github.com/gorilla/mux"
@@ -17,24 +18,35 @@ import (
 	"google.golang.org/grpc/credentials"
 	"gopkg.in/macaroon.v2"
 	"log"
-	"errors"
 )
 
 // ArtServer is a repository to store/serve music and related data for this austk node.
 // Implementations may use a database, file system, test fixture, etc.
 type ArtServer interface {
-	Albums(artistId string) (map[string]*art.Album, error)
+	// Get and store artist info.
+	StoreArtist(artist *art.Artist) error
 	Artists() (map[string]*art.Artist, error)
+	Artist(artistId string) (*art.Artist, error)
+
+	// Album: an artist's optional track container to name and sequence tracks
+	StoreAlbum(album *art.Album) error
+	Albums(artistId string) (map[string]*art.Album, error)
+
+	// Get and store Track info.
+	StoreTrack(track *art.Track) error
+	StoreTrackPayload(artistId string, artistTrackId string, bytes []byte) error
 	Tracks(artistID string) (map[string]*art.Track, error)
-	Peer(pubkey string) (*art.Peer, error)
+	Track(artistID string, artistTrackID string) (*art.Track, error)
+	TrackFilePath(artistID string, artistTrackID string) string
+
+	// Get and store network info.
+	StorePeer(peer *art.Peer) error
 	Peers() (map[string]*art.Peer, error)
-	SetArtist(artist *art.Artist) error
-	SetPeer(peer *art.Peer) error
-	Track(artistId string, trackId string) (*art.Track, error)
+	Peer(pubkey string) (*art.Peer, error)
 }
 
 var (
-	ErrArtNotFound = errors.New("ArtServer has no such art")
+	ErrArtNotFound  = errors.New("ArtServer has no such art")
 	ErrPeerNotFound = errors.New("AustkServer has no such peer")
 )
 
@@ -157,7 +169,7 @@ func (s *AustkServer) Start() error {
 			selfPeer.Port = restPort
 		}
 	}
-	err = s.artServer.SetPeer(selfPeer)
+	err = s.artServer.StorePeer(selfPeer)
 	if err != nil {
 		log.Printf(logPrefix+"PutPeer %v error: %v", pubkey, err)
 		return err
@@ -305,7 +317,7 @@ func (server *AustkServer) Stop() error {
 // putArtistHandler handles a request to put an artist into the ArtService.
 func (server *AustkServer) putArtistHandler(w http.ResponseWriter, req *http.Request) {
 	const logPrefix = "AustkServer putArtistHandler "
-	
+
 	requestVars := mux.Vars(req)
 	decoder := json.NewDecoder(req.Body)
 	var artist art.Artist
@@ -322,7 +334,7 @@ func (server *AustkServer) putArtistHandler(w http.ResponseWriter, req *http.Req
 	}
 	w.WriteHeader(http.StatusNotImplemented)
 	go func() {
-		err = server.artServer.SetArtist(&artist)
+		err = server.artServer.StoreArtist(&artist)
 		if err != nil {
 			log.Printf(logPrefix+"Failed to put artist, error: %v", err)
 		}
@@ -333,16 +345,17 @@ func (server *AustkServer) putArtistHandler(w http.ResponseWriter, req *http.Req
 func (server *AustkServer) getArtHandler(w http.ResponseWriter, req *http.Request) {
 	const logPrefix = "server getArtHandler "
 
-	artistId := mux.Vars(req)["artist"]
-	trackId := mux.Vars(req)["track"]
-	if artistId == "" || trackId == "" {
-		log.Printf(logPrefix+"expected artist and track but received artist: %s, track: %s", artistId, trackId)
+	artistID := mux.Vars(req)["artist"]
+	artistTrackID := mux.Vars(req)["track"]
+	if artistID == "" || artistTrackID == "" {
+		log.Printf(logPrefix+"expected artist and track but received artist: %s, track: %s",
+			artistID, artistTrackID)
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
-	log.Printf(logPrefix+"artist: %v, track: %v", artistId, trackId)
+	log.Printf(logPrefix+"artist: %v, track: %v", artistID, artistTrackID)
 
-	_, err := server.artServer.Track(artistId, trackId)
+	_, err := server.artServer.Track(artistID, artistTrackID)
 	if err != nil {
 		// TODO: if requested track isn't found, error with 404 Not Found
 		log.Printf(logPrefix+"failed to select track, error: %v", err)
@@ -353,9 +366,10 @@ func (server *AustkServer) getArtHandler(w http.ResponseWriter, req *http.Reques
 	// TODO: to require payment, check for secret received in receipt for paying invoice
 	// If valid secret is not supplied, issue a Lightning invoice.
 	// For now, skip the payment mechanics and serve the requested resource immediately.
-	mp3, err := OpenMp3ForTrackToRead(artistId, trackId)
+	trackFilePath := server.artServer.TrackFilePath(artistID, artistTrackID)
+	mp3, err := OpenMp3ToRead(trackFilePath)
 	if err != nil {
-		log.Printf(logPrefix+"OpenMp3ForTrackToRead %s %s, error: %v", artistId, trackId, err)
+		log.Printf(logPrefix+"OpenMp3ForTrackToRead %s %s, error: %v", artistID, artistTrackID, err)
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}

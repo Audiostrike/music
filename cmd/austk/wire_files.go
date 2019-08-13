@@ -12,11 +12,11 @@ import (
 	"github.com/google/wire"
 )
 
-func injectDbServer(db *audiostrike.AustkDb, artRootPath string) (s audiostrike.ArtServer) {
-	wire.Build(audiostrike.NewDbServer, useDbServer)
+func injectFileServer(artDirPath string) (s audiostrike.ArtServer, err error) {
+	wire.Build(audiostrike.NewFileServer, useFileServer)
 	return
 }
 
-func useDbServer(dbServer *audiostrike.DbServer) audiostrike.ArtServer {
-	return dbServer
+func useFileServer(fileServer *audiostrike.FileServer) audiostrike.ArtServer {
+	return fileServer
 }

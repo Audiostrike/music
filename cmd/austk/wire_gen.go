@@ -11,14 +11,31 @@ import (
 
 // Injectors from wire_db.go:
 
-func injectArtServer(db *audiostrike.AustkDb) audiostrike.ArtServer {
-	dbServer := audiostrike.NewDbServer(db)
+func injectDbServer(db *audiostrike.AustkDb, artRootPath string) audiostrike.ArtServer {
+	dbServer := audiostrike.NewDbServer(db, artRootPath)
 	artServer := useDbServer(dbServer)
 	return artServer
+}
+
+// Injectors from wire_files.go:
+
+func injectFileServer(artDirPath string) (audiostrike.ArtServer, error) {
+	fileServer, err := audiostrike.NewFileServer(artDirPath)
+	if err != nil {
+		return nil, err
+	}
+	artServer := useFileServer(fileServer)
+	return artServer, nil
 }
 
 // wire_db.go:
 
 func useDbServer(dbServer *audiostrike.DbServer) audiostrike.ArtServer {
 	return dbServer
+}
+
+// wire_files.go:
+
+func useFileServer(fileServer *audiostrike.FileServer) audiostrike.ArtServer {
+	return fileServer
 }

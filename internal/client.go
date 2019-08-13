@@ -54,7 +54,7 @@ func (client *Client) CloseConnection() {
 }
 
 // SyncFromPeer gets art-directory records (music metadata) from client's peer over tor and imports it into db.
-func (client *Client) SyncFromPeer(db *AustkDb) ([]*art.Track, error) {
+func (client *Client) SyncFromPeer(localStorage ArtServer) ([]*art.Track, error) {
 	const logPrefix = "client SyncFromPeer "
 
 	reply, err := client.GetAllArtByTor()
@@ -62,32 +62,32 @@ func (client *Client) SyncFromPeer(db *AustkDb) ([]*art.Track, error) {
 		log.Fatalf(logPrefix+"GetAllArtByTor <-%v<-%v error: %v", client.torProxy, client.peerAddress, err)
 	}
 
-	err = client.importArtReply(reply, db)
+	err = client.storeArtReply(reply, localStorage)
 	if err != nil {
 		log.Fatalf(logPrefix+"importArtReply error: %v", err)
 	}
 	return reply.Tracks, err
 }
 
-func (client *Client) importArtReply(artReply *art.ArtReply, db *AustkDb) (err error) {
+func (client *Client) storeArtReply(artReply *art.ArtReply, localStorage ArtServer) (err error) {
 	const logPrefix = "austk importArtReply "
 	var errors []error
 	for _, artist := range artReply.Artists {
-		err = db.PutArtist(artist)
+		err = localStorage.StoreArtist(artist)
 		if err != nil {
 			errors = append(errors, err)
 		}
 	}
 
 	for _, track := range artReply.Tracks {
-		err = db.PutTrack(track)
+		err = localStorage.StoreTrack(track)
 		if err != nil {
 			errors = append(errors, err)
 		}
 	}
 
 	for _, peer := range artReply.Peers {
-		err = db.PutPeer(peer)
+		err = localStorage.StorePeer(peer)
 		if err != nil {
 			errors = append(errors, err)
 		}
@@ -108,17 +108,17 @@ func (client *Client) importArtReply(artReply *art.ArtReply, db *AustkDb) (err e
 // The .mp3 file is written as `./tracks/{ArtistId}/{ArtistTrackId}.mp3`
 // That is, tracks download under an artist-specific subdirectory of ./tracks
 // with filenames from the track's ArtistTrackId.
-func (client *Client) DownloadTracks(tracks []*art.Track, db *AustkDb) (err error) {
+func (client *Client) DownloadTracks(tracks []*art.Track, localStorage ArtServer) (err error) {
 	const logPrefix = "client DownloadTracks "
 	var errors []error
 	for _, track := range tracks {
-		trackArtist, err := db.SelectArtist(track.ArtistId)
+		trackArtist, err := localStorage.Artist(track.ArtistId)
 		if err != nil {
 			errors = append(errors, err)
 			continue // to next track
 		}
 
-		peer, err := db.SelectPeer(trackArtist.Pubkey)
+		peer, err := localStorage.Peer(trackArtist.Pubkey)
 		if peer == nil {
 			err = fmt.Errorf("no known peer owns pubkey %s for %s/%s.mp3",
 				trackArtist.Pubkey, track.ArtistId, track.ArtistTrackId)
@@ -126,14 +126,16 @@ func (client *Client) DownloadTracks(tracks []*art.Track, db *AustkDb) (err erro
 			continue // to next track
 		}
 
-		replyBytes, err := client.GetTrackByTor(track.ArtistId, track.ArtistTrackId)
+		replyBytes, err := client.GetTrack(track.ArtistId, track.ArtistTrackId)
 		if err != nil {
+			log.Printf(logPrefix+"Failed GetTrackByTor, error: %v", err)
 			errors = append(errors, err)
 			continue // to next track
 		}
 
-		err = WriteTrack(track.ArtistId, track.ArtistTrackId, replyBytes)
+		err = localStorage.StoreTrackPayload(track.ArtistId, track.ArtistTrackId, replyBytes)
 		if err != nil {
+			log.Printf(logPrefix+"Failed StoreTrackPayload, error: %v", err)
 			errors = append(errors, err)
 			continue // to next track
 		}
@@ -167,22 +169,23 @@ func (client *Client) GetAllArtByTor() (*art.ArtReply, error) {
 		log.Printf(logPrefix+"ReadAll response.Body error: %v", err)
 		return nil, err
 	}
-	var reply art.ArtReply
-	err = proto.Unmarshal(replyBytes, &reply)
+	reply := &art.ArtReply{}
+	err = proto.Unmarshal(replyBytes, reply)
 	if err != nil {
 		log.Printf(logPrefix+"Unmarshal reply error: %v", err)
 		return nil, err
 	}
 	
-	return &reply, nil
+	return reply, nil
 }
 
-// GetTrackByTor gets the track (mp3 bytes by http over tor) with artistTrackId by the artist with artistId.
-func (client *Client) GetTrackByTor(artistId string, artistTrackId string) ([]byte, error) {
+// GetTrack gets the mp3 track (the bytes of the mp3 file) artistID/artistTrackID
+// from client's peer by http over tor .
+func (client *Client) GetTrack(artistID string, artistTrackID string) ([]byte, error) {
 	const logPrefix = "client GetTrackByTor "
 	
 	trackUrl := fmt.Sprintf("http://%s/art/%s/%s",
-		client.peerAddress, artistId, artistTrackId)
+		client.peerAddress, artistID, artistTrackID)
 	log.Printf(logPrefix+"Get %s...", trackUrl)
 	response, err := client.torClient.Get(trackUrl)
 	if err != nil {

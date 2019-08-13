@@ -20,7 +20,7 @@ const (
 	defaultRESTHost     = "localhost"
 	defaultRESTPort     = 53545 // 0xd129 from Unicode symbol 0x1d129 for multi-measure rest
 	defaultRPCPort      = 53308 // 0xd03c from Unicode symbol 0x1d03c for Byzantine musical symbol rapisma
-	defaultMp3DirName   = "mp3"
+	defaultArtDirName   = "art"
 	defaultTorProxy     = "socks5://127.0.0.1:9050"
 	defaultTLSCertPath  = "./tls.cert"
 	defaultMacaroonPath = "./admin.macaroon"
@@ -33,10 +33,10 @@ const (
 
 var (
 	defaultDir    = defaultAppDir()
-	defaultMp3Dir = filepath.Join(defaultDir, defaultMp3DirName)
+	defaultArtDir = filepath.Join(defaultDir, defaultArtDirName)
 )
 
-// Config for art server.
+// Config for austk server.
 // These settings are specified in defaults, a config file, or the command line.
 // (Config file not yet implemented)
 type Config struct {
@@ -46,7 +46,7 @@ type Config struct {
 	DbUser         string `long:"dbuser" description:"mysql db username"`
 	DbPassword     string `long:"dbpass" description:"mysql db password"`
 	AddMp3Filename string `long:"add" description:"mp3 file to add"`
-	Mp3Dir         string
+	ArtDir         string `long:"dir" description:"directory storing music art/artist/album/track"`
 	TorProxy       string `long:"torproxy" description:"onion-routing proxy"`
 	PeerAddress    string `long:"peer" description:"audiostrike server peer to connect"`
 	Pubkey         string `long:"pubkey"`
@@ -158,7 +158,7 @@ func getDefaultConfig() *Config {
 		ConfigFilename: defaultConfFilename,
 		DbName:         defaultDbName,
 		DbUser:         defaultDbUser,
-		Mp3Dir:         defaultMp3Dir,
+		ArtDir:         defaultArtDir,
 		TorProxy:       defaultTorProxy,
 		RestHost:       defaultRESTHost,
 		RestPort:       defaultRESTPort,

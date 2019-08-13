@@ -11,27 +11,39 @@ import (
 	"testing"
 )
 
-// func TestMain(m *testing.M) {
-// 	// Initialize....
-// 	// Run the test.
-// 	os.Exit(m.Run())
-// }
-
 const (
 	mockArtistId string = "alicetheartist"
 	mockPubkey   string = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef50"
 	mockTrackId  string = "testtrack"
 )
 
+var cfg *Config = &Config{
+	ArtDir:       "testart",
+	CertFilePath: "tls.cert",
+	MacaroonPath: "test.macaroon",
+	LndHost:      "127.0.0.1",
+	LndGrpcPort:  10009,
+}
+
 type MockArtServer struct {
-	artists map[string]*art.Artist
-	albums  map[string]map[string]*art.Album
-	peers   map[string]*art.Peer
-	tracks  map[string]map[string]*art.Track
+	artists  map[string]*art.Artist
+	albums   map[string]map[string]*art.Album
+	peers    map[string]*art.Peer
+	tracks   map[string]map[string]*art.Track
+	payloads map[string]map[string][]byte
 }
 
 func (s *MockArtServer) Artists() (map[string]*art.Artist, error) {
 	return s.artists, nil
+}
+
+func (s *MockArtServer) Artist(artistId string) (*art.Artist, error) {
+	return s.artists[artistId], nil
+}
+
+func (s *MockArtServer) StoreAlbum(album *art.Album) error {
+	s.albums[album.ArtistId][album.ArtistAlbumId] = album
+	return nil
 }
 
 func (s *MockArtServer) Albums(artistId string) (map[string]*art.Album, error) {
@@ -51,11 +63,11 @@ func (s *MockArtServer) Peers() (map[string]*art.Peer, error) {
 	return s.peers, nil
 }
 
-func (s *MockArtServer) SetArtist(artist *art.Artist) error {
+func (s *MockArtServer) StoreArtist(artist *art.Artist) error {
 	return fmt.Errorf("not implemented")
 }
 
-func (s *MockArtServer) SetPeer(peer *art.Peer) error {
+func (s *MockArtServer) StorePeer(peer *art.Peer) error {
 	for i, old := range s.peers {
 		if old.Pubkey == peer.Pubkey {
 			s.peers[i] = peer
@@ -69,12 +81,26 @@ func (s *MockArtServer) SetPeer(peer *art.Peer) error {
 func (s *MockArtServer) Track(artistId string, trackId string) (*art.Track, error) {
 	if artistId == mockArtistId && trackId == mockTrackId {
 		return &art.Track{
-			ArtistId: mockArtistId,
+			ArtistId:      mockArtistId,
 			ArtistTrackId: mockTrackId,
 		}, nil
 	} else {
 		return nil, ErrArtNotFound
 	}
+}
+
+func (s *MockArtServer) TrackFilePath(artistID string, artistTrackID string) string {
+	return BuildMp3Filename(cfg.ArtDir, artistID, artistTrackID)
+}
+
+func (s *MockArtServer) StoreTrack(track *art.Track) error {
+	s.tracks[track.ArtistId][track.ArtistTrackId] = track
+	return nil
+}
+
+func (s *MockArtServer) StoreTrackPayload(artistId string, artistTrackId string, payload []byte) error {
+	s.payloads[artistId][artistTrackId] = payload
+	return nil
 }
 
 func (s *MockArtServer) Tracks(artistId string) (map[string]*art.Track, error) {
@@ -101,12 +127,6 @@ var mockArtServer MockArtServer = MockArtServer{
 
 // TestGetAllArt tests that AustkServer's getAllArtHandler returns art from the given ArtServer.
 func TestGetAllArt(t *testing.T) {
-	cfg := &Config{
-		CertFilePath: "tls.cert",
-		MacaroonPath: "test.macaroon",
-		LndHost:      "127.0.0.1",
-		LndGrpcPort:  10009,
-	}
 	austkServer, err := NewAustkServer(cfg, &mockArtServer)
 	if err != nil {
 		t.Errorf("Failed to connect to music DB, error %v", err)
@@ -155,12 +175,6 @@ func TestGetAllArt(t *testing.T) {
 
 // TestGetArt
 func TestGetArt(t *testing.T) {
-	cfg := &Config{
-		CertFilePath: "tls.cert",
-		MacaroonPath: "test.macaroon",
-		LndHost:      "127.0.0.1",
-		LndGrpcPort:  10009,
-	}
 	austkServer, err := NewAustkServer(cfg, &mockArtServer)
 	if err != nil {
 		t.Errorf("Failed to connect to music DB, error %v", err)
