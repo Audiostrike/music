@@ -24,17 +24,17 @@ const (
 )
 
 type MockArtServer struct {
-	artists map[string]art.Artist
-	albums  map[string]map[string]art.Album
-	peers   []*art.Peer
-	tracks  map[string]map[string]art.Track
+	artists map[string]*art.Artist
+	albums  map[string]map[string]*art.Album
+	peers   map[string]*art.Peer
+	tracks  map[string]map[string]*art.Track
 }
 
-func (s *MockArtServer) Artists() (map[string]art.Artist, error) {
+func (s *MockArtServer) Artists() (map[string]*art.Artist, error) {
 	return s.artists, nil
 }
 
-func (s *MockArtServer) Albums(artistId string) (map[string]art.Album, error) {
+func (s *MockArtServer) Albums(artistId string) (map[string]*art.Album, error) {
 	return s.albums[artistId], nil
 }
 
@@ -47,7 +47,7 @@ func (s *MockArtServer) Peer(pubkey string) (*art.Peer, error) {
 	return nil, ErrPeerNotFound
 }
 
-func (s *MockArtServer) Peers() ([]*art.Peer, error) {
+func (s *MockArtServer) Peers() (map[string]*art.Peer, error) {
 	return s.peers, nil
 }
 
@@ -62,7 +62,7 @@ func (s *MockArtServer) SetPeer(peer *art.Peer) error {
 			return nil
 		}
 	}
-	s.peers = append(s.peers, peer)
+	s.peers[peer.Pubkey] = peer
 	return nil
 }
 
@@ -77,21 +77,21 @@ func (s *MockArtServer) Track(artistId string, trackId string) (*art.Track, erro
 	}
 }
 
-func (s *MockArtServer) Tracks(artistId string) (map[string]art.Track, error) {
+func (s *MockArtServer) Tracks(artistId string) (map[string]*art.Track, error) {
 	return s.tracks[artistId], nil
 }
 
 var mockArtServer MockArtServer = MockArtServer{
-	artists: map[string]art.Artist{
-		mockArtistId: art.Artist{
+	artists: map[string]*art.Artist{
+		mockArtistId: &art.Artist{
 			ArtistId: mockArtistId,
 			Pubkey:   mockPubkey,
 		},
 	},
-	peers: []*art.Peer{},
-	tracks: map[string]map[string]art.Track{
-		mockArtistId: map[string]art.Track{
-			mockTrackId: art.Track{
+	peers: map[string]*art.Peer{},
+	tracks: map[string]map[string]*art.Track{
+		mockArtistId: map[string]*art.Track{
+			mockTrackId: &art.Track{
 				ArtistId:      mockArtistId,
 				ArtistTrackId: mockTrackId,
 			},

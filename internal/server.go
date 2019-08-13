@@ -23,11 +23,11 @@ import (
 // ArtServer is a repository to store/serve music and related data for this austk node.
 // Implementations may use a database, file system, test fixture, etc.
 type ArtServer interface {
-	Albums(artistId string) (map[string]art.Album, error)
-	Artists() (map[string]art.Artist, error)
-	Tracks(artistID string) (map[string]art.Track, error)
+	Albums(artistId string) (map[string]*art.Album, error)
+	Artists() (map[string]*art.Artist, error)
+	Tracks(artistID string) (map[string]*art.Track, error)
 	Peer(pubkey string) (*art.Peer, error)
-	Peers() ([]*art.Peer, error)
+	Peers() (map[string]*art.Peer, error)
 	SetArtist(artist *art.Artist) error
 	SetPeer(peer *art.Peer) error
 	Track(artistId string, trackId string) (*art.Track, error)
@@ -205,8 +205,7 @@ func (server *AustkServer) getAllArtHandler(w http.ResponseWriter, req *http.Req
 	log.Println(logPrefix + "Select all artists:")
 	for _, artist := range artists {
 		log.Printf("\tArtist: %v", artist)
-		artistCopy := artist
-		artistArray = append(artistArray, &artistCopy)
+		artistArray = append(artistArray, artist)
 		tracks, err := server.artServer.Tracks(artist.ArtistId)
 		if err != nil {
 			log.Printf(logPrefix+"artServer.Tracks error: %v", err)
@@ -215,8 +214,7 @@ func (server *AustkServer) getAllArtHandler(w http.ResponseWriter, req *http.Req
 		}
 		for _, track := range tracks {
 			log.Printf("\tTrack: %v", track)
-			trackCopy := track
-			trackArray = append(trackArray, &trackCopy)
+			trackArray = append(trackArray, track)
 		}
 	}
 	peers, err := server.artServer.Peers()

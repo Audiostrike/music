@@ -131,7 +131,7 @@ func (db *AustkDb) verifyReady() error {
 }
 
 // SelectAllArtists returns all artists from the sqlDb
-func (db *AustkDb) SelectAllArtists() (artists map[string]art.Artist, err error) {
+func (db *AustkDb) SelectAllArtists() (artists map[string]*art.Artist, err error) {
 	const logPrefix = "db SelectAllArtists "
 	err = db.verifyReady()
 	if err != nil {
@@ -145,7 +145,7 @@ func (db *AustkDb) SelectAllArtists() (artists map[string]art.Artist, err error)
 		return
 	}
 	defer artistRows.Close()
-	artists = make(map[string]art.Artist)
+	artists = make(map[string]*art.Artist)
 	var (
 		artistID string
 		name     string
@@ -157,10 +157,11 @@ func (db *AustkDb) SelectAllArtists() (artists map[string]art.Artist, err error)
 			log.Printf(logPrefix+"row Scan error: %v", err)
 			return
 		}
-		artists[artistID] = art.Artist{
+		artist := art.Artist{
 			ArtistId: artistID,
 			Name:     name,
 			Pubkey:   pubkey}
+		artists[artistID] = &artist
 	}
 	return
 }
@@ -310,7 +311,7 @@ func (db *AustkDb) SelectArtist(artistID string) (artist *art.Artist, err error)
 // For example, a music artist may cut an episode into multiple tracks, each episode then has multiple tracks,
 // each season having multiple episodes, and each series having multiple seasons.
 //
-func (db *AustkDb) SelectArtistTracks(artistID string) (tracks map[string]art.Track, err error) {
+func (db *AustkDb) SelectArtistTracks(artistID string) (tracks map[string]*art.Track, err error) {
 	trackRows, err := db.sqlDb.Query(
 		"SELECT `artist_track_id`, `title`, `artist_album_id`, `album_track_num`"+
 			" FROM `track`"+
@@ -320,7 +321,7 @@ func (db *AustkDb) SelectArtistTracks(artistID string) (tracks map[string]art.Tr
 		return
 	}
 	defer trackRows.Close()
-	tracks = make(map[string]art.Track)
+	tracks = make(map[string]*art.Track)
 	var (
 		trackID       string
 		title         string
@@ -332,12 +333,13 @@ func (db *AustkDb) SelectArtistTracks(artistID string) (tracks map[string]art.Tr
 		if err != nil {
 			return
 		}
-		tracks[trackID] = art.Track{
+		track := art.Track{
 			ArtistId:         artistID,
 			ArtistTrackId:    trackID,
 			Title:            title,
 			ArtistAlbumId:    artistAlbumID,
 			AlbumTrackNumber: uint32(albumTrackNum)}
+		tracks[trackID] = &track
 	}
 	return
 }
@@ -415,7 +417,7 @@ func (db *AustkDb) PutPeer(peer *art.Peer) error {
 			existingPeer.Host, existingPeer.Port,
 			updatedPeer.Host, updatedPeer.Port)
 	}
-	
+
 	return nil
 }
 
@@ -599,7 +601,7 @@ func (db *AustkDb) SelectAlbum(artistID string, albumID string) (*art.Album, err
 }
 
 // SelectAlbum returns the metadata of the db album for the given artist with the given albumID
-func (db *AustkDb) SelectArtistAlbums(artistID string) (map[string]art.Album, error) {
+func (db *AustkDb) SelectArtistAlbums(artistID string) (map[string]*art.Album, error) {
 	albumRows, err := db.sqlDb.Query(
 		"SELECT `artist_album_id`, `title`"+
 			" FROM `album`"+
@@ -609,7 +611,7 @@ func (db *AustkDb) SelectArtistAlbums(artistID string) (map[string]art.Album, er
 		return nil, err
 	}
 	defer albumRows.Close()
-	albums := make(map[string]art.Album)
+	albums := make(map[string]*art.Album)
 	var (
 		artistAlbumID string
 		title         string
@@ -619,18 +621,19 @@ func (db *AustkDb) SelectArtistAlbums(artistID string) (map[string]art.Album, er
 		if err != nil {
 			return nil, err
 		}
-		albums[artistAlbumID] = art.Album{
+		album := art.Album{
 			ArtistId:      artistID,
 			ArtistAlbumId: artistAlbumID,
 			Title:         title,
 		}
+		albums[artistAlbumID] = &album
 	}
 
 	return albums, nil
 }
 
 // SelectAllPeers selects an array of all the Peer records.
-func (db *AustkDb) SelectAllPeers() ([]*art.Peer, error) {
+func (db *AustkDb) SelectAllPeers() (map[string]*art.Peer, error) {
 	const logPrefix = "db SelectAllPeers "
 	peerRows, err := db.sqlDb.Query(
 		"SELECT `host`, `port`, `pubkey` FROM `peer`")
@@ -639,7 +642,7 @@ func (db *AustkDb) SelectAllPeers() ([]*art.Peer, error) {
 		return nil, err
 	}
 	defer peerRows.Close()
-	peers := make([]*art.Peer, 0)
+	peers := make(map[string]*art.Peer, 0)
 	var (
 		host   string
 		port   uint32
@@ -650,11 +653,11 @@ func (db *AustkDb) SelectAllPeers() ([]*art.Peer, error) {
 		if err != nil {
 			return nil, err
 		}
-		peers = append(peers, &art.Peer{
+		peers[pubkey] = &art.Peer{
 			Host:   host,
 			Port:   port,
 			Pubkey: pubkey,
-		})
+		}
 	}
 
 	return peers, nil
