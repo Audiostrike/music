@@ -52,40 +52,66 @@ var (
 
 // Server hosts the configured artist's art for http/tor clients who might pay the lnd node.
 type AustkServer struct {
-	config      *Config
-	artServer   ArtServer // interface for storing art in a file system, database, or test mock
-	httpServer  *http.Server
-	lndClient   lnrpc.LightningClient
-	lndConn     *grpc.ClientConn
-	quitChannel chan bool
+	config          *Config
+	artServer       ArtServer // interface for storing art in a file system, database, or test mock
+	httpServer      *http.Server
+	lightningClient lnrpc.LightningClient
+	quitChannel     chan bool
 }
 
 // NewAustkServer creates a new network Server to serve the configured artist's art.
-func NewAustkServer(cfg *Config, artServer ArtServer) (*AustkServer, error) {
+func NewAustkServer(cfg *Config, artServer ArtServer, lightningClient lnrpc.LightningClient) (*AustkServer, error) {
 	const logPrefix = "server NewServer "
-	serverNameOverride := ""
-	tlsCreds, err := credentials.NewClientTLSFromFile(cfg.CertFilePath, serverNameOverride)
+
+	// Test lightningClient to ensure that we can sign messages with it.
+	ctx := context.Background()
+	var signMessageInput lnrpc.SignMessageRequest
+	signMessageInput.Msg = []byte("Test message to ensure lnd is operational")
+	_, err := lightningClient.SignMessage(ctx, &signMessageInput)
+	if err != nil {
+		log.Fatalf(logPrefix+"lnd is not operational. SignMessage error: %v", err)
+		return nil, err
+	}
+
+	return &AustkServer{
+		artServer:       artServer,
+		config:          cfg,
+		httpServer:      &http.Server{Addr: "localhost"},
+		lightningClient: lightningClient,
+		quitChannel:     make(chan bool),
+	}, nil
+}
+
+func NewLightningClient(cfg *Config) (lnrpc.LightningClient, error) {
+	const logPrefix = "server newLndClient "
+
+	// Get the TLS credentials for the lnd server.
+	// The second paramater here is serverNameOverride, set to ""
+	// except to override the virtual host name of authority in test requests.
+	lndTlsCreds, err := credentials.NewClientTLSFromFile(cfg.CertFilePath, "")
 	if err != nil {
 		log.Printf(logPrefix+"lnd credentials NewClientTLSFromFile error: %v", err)
 		return nil, err
 	}
 
+	// Get the macaroon for lnd grpc requests.
+	// This macaroon must should support creating invoices and signing messages.
 	macaroonData, err := ioutil.ReadFile(cfg.MacaroonPath)
 	if err != nil {
 		log.Printf(logPrefix+"ReadFile macaroon %v error %v\n", cfg.MacaroonPath, err)
 		return nil, err
 	}
-	mac := &macaroon.Macaroon{}
-	err = mac.UnmarshalBinary(macaroonData)
+	lndMacaroon := &macaroon.Macaroon{}
+	err = lndMacaroon.UnmarshalBinary(macaroonData)
 	if err != nil {
 		log.Printf(logPrefix+"UnmarchalBinary macaroon error: %v\n", err)
 		return nil, err
 	}
 
 	lndOpts := []grpc.DialOption{
-		grpc.WithTransportCredentials(tlsCreds),
+		grpc.WithTransportCredentials(lndTlsCreds),
 		grpc.WithBlock(),
-		grpc.WithPerRPCCredentials(macaroons.NewMacaroonCredential(mac)),
+		grpc.WithPerRPCCredentials(macaroons.NewMacaroonCredential(lndMacaroon)),
 	}
 
 	lndGrpcEndpoint := fmt.Sprintf("%v:%d", cfg.LndHost, cfg.LndGrpcPort)
@@ -97,26 +123,7 @@ func NewAustkServer(cfg *Config, artServer ArtServer) (*AustkServer, error) {
 	}
 	lndClient := lnrpc.NewLightningClient(lndConn)
 
-	ctx := context.Background()
-	var signMessageInput lnrpc.SignMessageRequest
-	signMessageInput.Msg = []byte("Test message")
-	signMessageResult, err := lndClient.SignMessage(ctx, &signMessageInput)
-	if err != nil {
-		log.Printf(logPrefix+"SignMessage test error: %v", err)
-		return nil, err
-	}
-	log.Printf(logPrefix+"Signed test message, signature: %v", signMessageResult.Signature)
-
-	return &AustkServer{
-		artServer: artServer,
-		config:    cfg,
-		httpServer: &http.Server{
-			Addr: "localhost",
-		},
-		lndConn:     lndConn,
-		lndClient:   lndClient,
-		quitChannel: make(chan bool),
-	}, nil
+	return lndClient, err
 }
 
 // Start the AustkServer listening for REST austk requests for art.
@@ -255,7 +262,7 @@ func (server *AustkServer) getAllArtHandler(w http.ResponseWriter, req *http.Req
 		return
 	}
 	signMessageInput.Msg = []byte(data)
-	signMessageResult, err := server.lndClient.SignMessage(ctx, &signMessageInput)
+	signMessageResult, err := server.lightningClient.SignMessage(ctx, &signMessageInput)
 	if err != nil {
 		log.Printf(logPrefix+"SignMessage error: %v", err)
 		w.WriteHeader(http.StatusInternalServerError)
@@ -271,7 +278,7 @@ func (server *AustkServer) getAllArtHandler(w http.ResponseWriter, req *http.Req
 func (server *AustkServer) Pubkey() (string, error) {
 	ctx := context.Background()
 	getInfoRequest := lnrpc.GetInfoRequest{}
-	getInfoResponse, err := server.lndClient.GetInfo(ctx, &getInfoRequest)
+	getInfoResponse, err := server.lightningClient.GetInfo(ctx, &getInfoRequest)
 	if err != nil {
 		return "", err
 	}

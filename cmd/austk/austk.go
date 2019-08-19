@@ -94,16 +94,21 @@ func main() {
 		client.CloseConnection()
 	}
 
-	var server *audiostrike.AustkServer
+	var austkServer *audiostrike.AustkServer
 	if cfg.RunAsDaemon {
+		austkServer, err = injectLnd(cfg, localStorage)
+		if err != nil {
+			log.Fatalf(logPrefix+"Failed to connect to lightning network, error: %v", err)
+		}
+		
 		log.Println(logPrefix + "Starting Audiostrike server...")
-		server, err := startServer(cfg, localStorage)
+		err = startServer(cfg, localStorage, austkServer)
 		if err != nil {
 			log.Fatalf(logPrefix+"startServer daemon error: %v", err)
 		}
-		defer server.Stop()
+		defer austkServer.Stop()
 
-		cfg.Pubkey, err = server.Pubkey()
+		cfg.Pubkey, err = austkServer.Pubkey()
 		if err != nil {
 			log.Fatalf(logPrefix+"error getting server pubkey: %v", err)
 		}
@@ -150,7 +155,7 @@ func main() {
 
 	if cfg.RunAsDaemon {
 		// Execution will stop in this function until server quits from SIGINT etc.
-		server.WaitUntilQuitSignal()
+		austkServer.WaitUntilQuitSignal()
 	}
 }
 
@@ -233,7 +238,7 @@ func storeMp3File(filename string, localStorage audiostrike.ArtServer) (*audiost
 		log.Printf(logPrefix+"ReadBytes error: %v", err)
 		return nil, err
 	}
-	
+
 	err = localStorage.StoreTrackPayload(track.ArtistId, track.ArtistTrackId, trackPayload)
 	if err != nil {
 		log.Printf(logPrefix+"StoreTrackPayload for %s/%s with %d bytes, error: %v",
@@ -254,38 +259,32 @@ func nameToId(name string) string {
 // startServer sets the configured artist to use the configured lnd for signing and selling music.
 // and starts running as a daemon
 // until SIGINT (ctrl-c or `kill`) is received.
-func startServer(cfg *audiostrike.Config, localStorage audiostrike.ArtServer) (*audiostrike.AustkServer, error) {
+func startServer(cfg *audiostrike.Config, localStorage audiostrike.ArtServer, austkServer *audiostrike.AustkServer) error {
 	const logPrefix = "austk startServer "
 
-	s, err := audiostrike.NewAustkServer(cfg, localStorage)
-	if err != nil {
-		log.Printf(logPrefix+"NewServer error: %v", err)
-		return nil, err
-	}
-
 	// Set the pubkey for artistID to this server's pubkey (from lnd).
-	pubkey, err := s.Pubkey()
+	pubkey, err := austkServer.Pubkey()
 	if err != nil {
 		log.Fatalf(logPrefix+"s.Pubkey error: %v", err)
-		return nil, err
+		return err
 	}
 	artist, err := localStorage.Artist(cfg.ArtistId)
 	if err != nil {
 		log.Fatalf(logPrefix+"Failed to get artist %s from local storage, error: %v",
 			cfg.ArtistId, err)
-		return nil, err
+		return err
 	}
 	artist.Pubkey = pubkey
 	err = localStorage.StoreArtist(artist)
 	if err != nil {
 		log.Fatalf(logPrefix+"db.SetPubkeyForArtist %v, error: %v", cfg.ArtistId, err)
-		return nil, err
+		return err
 	}
 
-	err = s.Start()
+	err = austkServer.Start()
 	if err != nil {
 		log.Fatalf(logPrefix+"Start error: %v", err)
-		return nil, err
+		return err
 	}
-	return s, nil
+	return nil
 }

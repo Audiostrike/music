@@ -28,6 +28,20 @@ func injectFileServer(artDirPath string) (audiostrike.ArtServer, error) {
 	return artServer, nil
 }
 
+// Injectors from wire_lnd.go:
+
+func injectLnd(cfg *audiostrike.Config, artServer audiostrike.ArtServer) (*audiostrike.AustkServer, error) {
+	lightningClient, err := audiostrike.NewLightningClient(cfg)
+	if err != nil {
+		return nil, err
+	}
+	austkServer, err := audiostrike.NewAustkServer(cfg, artServer, lightningClient)
+	if err != nil {
+		return nil, err
+	}
+	return austkServer, nil
+}
+
 // wire_db.go:
 
 func useDbServer(dbServer *audiostrike.DbServer) audiostrike.ArtServer {

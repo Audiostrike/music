@@ -25,6 +25,8 @@ var cfg *Config = &Config{
 	LndGrpcPort:  10009,
 }
 
+var mockLightningClient MockLightningClient = MockLightningClient{}
+
 type MockArtServer struct {
 	artists  map[string]*art.Artist
 	albums   map[string]map[string]*art.Album
@@ -127,7 +129,7 @@ var mockArtServer MockArtServer = MockArtServer{
 
 // TestGetAllArt tests that AustkServer's getAllArtHandler returns art from the given ArtServer.
 func TestGetAllArt(t *testing.T) {
-	austkServer, err := NewAustkServer(cfg, &mockArtServer)
+	austkServer, err := NewAustkServer(cfg, &mockArtServer, &mockLightningClient)
 	if err != nil {
 		t.Errorf("Failed to connect to music DB, error %v", err)
 	}
@@ -175,7 +177,7 @@ func TestGetAllArt(t *testing.T) {
 
 // TestGetArt
 func TestGetArt(t *testing.T) {
-	austkServer, err := NewAustkServer(cfg, &mockArtServer)
+	austkServer, err := NewAustkServer(cfg, &mockArtServer, mockLightningClient)
 	if err != nil {
 		t.Errorf("Failed to connect to music DB, error %v", err)
 	}
@@ -214,7 +216,7 @@ func TestPeersForServerPubkey(t *testing.T) {
 		LndHost:      "127.0.0.1",
 		LndGrpcPort:  10009,
 	}
-	austkServer, err := NewAustkServer(cfg, &mockArtServer)
+	austkServer, err := NewAustkServer(cfg, &mockArtServer, mockLightningClient)
 	if err != nil {
 		t.Errorf("Failed to connect to music DB, error %v", err)
 	}
