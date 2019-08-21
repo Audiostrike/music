@@ -9,7 +9,6 @@ import (
 	"github.com/faiface/beep/speaker"
 	mikkyangid3 "github.com/mikkyang/id3-go"
 	"log"
-	"path/filepath"
 )
 
 // Mp3 exposes the Tags (mp3 metadata) and bytes of a given .mp3 file.
@@ -50,12 +49,6 @@ func OpenMp3ToRead(fileName string) (mp3 *Mp3, err error) {
 		Tags: tags,
 	}
 	return
-}
-
-func BuildMp3Filename(rootDirPath string, artistID string, artistTrackID string) (filename string) {
-	// TODO: make base path configurable, defaulting to ./tracks/
-	// TODO: sanitize filepath so peer cannot write outside the base path dir sandbox.
-	return filepath.Join(rootDirPath, artistID, artistTrackID+".mp3")
 }
 
 func parseTags(file *mikkyangid3.File) (map[string]string, error) {

@@ -8,12 +8,12 @@ import (
 	"io/ioutil"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"testing"
 )
 
 const (
 	mockArtistId string = "alicetheartist"
-	mockPubkey   string = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef50"
 	mockTrackId  string = "testtrack"
 )
 
@@ -91,8 +91,8 @@ func (s *MockArtServer) Track(artistId string, trackId string) (*art.Track, erro
 	}
 }
 
-func (s *MockArtServer) TrackFilePath(artistID string, artistTrackID string) string {
-	return BuildMp3Filename(cfg.ArtDir, artistID, artistTrackID)
+func (s *MockArtServer) TrackFilePath(track *art.Track) string {
+	return filepath.Join(cfg.ArtDir, track.ArtistId, track.ArtistTrackId+".mp3")
 }
 
 func (s *MockArtServer) StoreTrack(track *art.Track) error {
@@ -100,8 +100,8 @@ func (s *MockArtServer) StoreTrack(track *art.Track) error {
 	return nil
 }
 
-func (s *MockArtServer) StoreTrackPayload(artistId string, artistTrackId string, payload []byte) error {
-	s.payloads[artistId][artistTrackId] = payload
+func (s *MockArtServer) StoreTrackPayload(track *art.Track, payload []byte) error {
+	s.payloads[track.ArtistId][track.ArtistTrackId] = payload
 	return nil
 }
 
@@ -140,38 +140,51 @@ func TestGetAllArt(t *testing.T) {
 	}))
 	defer testHttpServer.Close()
 
-	// Get and deserialize the ArtReply to verify that austkServer published the expected art.
-	artReply := art.ArtReply{}
+	// Get and deserialize the ArtistPublication into ArtResources
+	// to verify that austkServer published the expected art.
+	artistPublication := art.ArtistPublication{}
 	response, err := http.Get(testHttpServer.URL)
-	bytes, err := ioutil.ReadAll(response.Body)
-	err = proto.Unmarshal(bytes, &artReply)
 
 	// Verify that the server handled the request successfully.
 	if response.StatusCode != 200 {
 		t.Errorf("expected success but got %d", response.StatusCode)
 	}
 
-	// Verify that the one test artist and her music was served.
-	if len(artReply.Artists) != 1 {
-		t.Errorf("expected 1 artist but got %d in reply: %v", len(artReply.Artists), artReply)
+	responseBytes, err := ioutil.ReadAll(response.Body)
+	artResources := art.ArtResources{}
+	err = proto.Unmarshal(responseBytes, &artistPublication)
+	if err != nil {
+		t.Errorf("failed to deserialize reply %v as ArtistPublication, error: %v",
+			responseBytes, err)
 	}
-	replyArtist := artReply.Artists[0]
+	// TODO: verify the signature, extract the pubkey, and compare with artistPublication.Artist.Pubkey
+	err = proto.Unmarshal(artistPublication.SerializedArtResources, &artResources)
+	if err != nil {
+		t.Errorf("failed to deserialize resources %v as ArtResources, error: %v",
+			artistPublication.SerializedArtResources, err)
+	}
+
+	// Verify that the one test artist and her music was served.
+	if len(artResources.Artists) != 1 {
+		t.Errorf("expected 1 artist but got %d in reply: %v", len(artResources.Artists), artResources)
+	}
+	replyArtist := artResources.Artists[0]
 	if replyArtist.Pubkey != mockPubkey {
 		t.Errorf("expected artist with mock pubkey %s but got %s in reply: %v",
-			mockPubkey, replyArtist.Pubkey, artReply)
+			mockPubkey, replyArtist.Pubkey, artResources)
 	}
 	if replyArtist.ArtistId != mockArtistId {
 		t.Errorf("expected artist with id %s but got %s in reply: %v",
-			mockArtistId, replyArtist.ArtistId, artReply)
+			mockArtistId, replyArtist.ArtistId, artResources)
 	}
 
-	if len(artReply.Tracks) != 1 {
-		t.Errorf("expected 1 track but got %d in reply: %v", len(artReply.Tracks), artReply)
+	if len(artResources.Tracks) != 1 {
+		t.Errorf("expected 1 track but got %d in reply: %v", len(artResources.Tracks), artResources)
 	}
-	replyTrack := artReply.Tracks[0]
+	replyTrack := artResources.Tracks[0]
 	if replyTrack.ArtistId != mockArtistId {
 		t.Errorf("expected track with artist id %s but got %s in reply: %v",
-			mockArtistId, replyTrack.ArtistId, artReply)
+			mockArtistId, replyTrack.ArtistId, artResources)
 	}
 }
 
@@ -238,10 +251,19 @@ func TestPeersForServerPubkey(t *testing.T) {
 	defer testHttpServer.Close()
 
 	// Get and deserialize the ArtReply to verify that austkServer published the expected peer.
-	artReply := art.ArtReply{}
 	response, err := http.Get(testHttpServer.URL)
 	bytes, err := ioutil.ReadAll(response.Body)
-	err = proto.Unmarshal(bytes, &artReply)
+	artistPublication := art.ArtistPublication{}
+	err = proto.Unmarshal(bytes, &artistPublication)
+	if err != nil {
+		t.Errorf("failed to deserialized response %v, error: %v", bytes, err)
+	}
+	artResources := art.ArtResources{}
+	err = proto.Unmarshal(artistPublication.SerializedArtResources, &artResources)
+	if err != nil {
+		t.Errorf("failed to deserialized ArtResources from %v, error: %v",
+			artistPublication.SerializedArtResources, err)
+	}
 
 	// Verify that the server handled the request successfully.
 	if response.StatusCode != 200 {
@@ -249,12 +271,12 @@ func TestPeersForServerPubkey(t *testing.T) {
 	}
 
 	// Verify that the one test artist and her music was served.
-	if len(artReply.Peers) != 1 {
-		t.Errorf("expected 1 peer but got %d in reply: %v", len(artReply.Peers), artReply)
+	if len(artResources.Peers) != 1 {
+		t.Errorf("expected 1 peer but got %d in reply: %v", len(artResources.Peers), artResources)
 	}
-	replyPeer := artReply.Peers[0]
+	replyPeer := artResources.Peers[0]
 	if replyPeer.Pubkey != lndPubkey {
 		t.Errorf("expected peer with pubkey %s but got %s in reply: %v",
-			lndPubkey, replyPeer.Pubkey, artReply)
+			lndPubkey, replyPeer.Pubkey, artResources)
 	}
 }

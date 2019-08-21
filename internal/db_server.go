@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	art "github.com/audiostrike/music/pkg/art"
 	"log"
+	"path/filepath"
 )
 
 // NewServer creates a new DbServer to save and serve art through an AustkDb database.
@@ -54,7 +55,7 @@ func (dbServer *DbServer) StoreTrackPayload(artistID string, artistTrackID strin
 }
 
 func (dbServer *DbServer) TrackFilePath(artistID string, artistTrackID string) string {
-	return BuildMp3Filename(dbServer.artRootPath, artistID, artistTrackID)
+	return filepath.Join(dbServer.artRootPath, artistID, artistTrackID+".mp3")
 }
 
 func (dbServer *DbServer) Tracks(artistID string) (map[string]*art.Track, error) {

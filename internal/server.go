@@ -34,15 +34,19 @@ type ArtServer interface {
 
 	// Get and store Track info.
 	StoreTrack(track *art.Track) error
-	StoreTrackPayload(artistId string, artistTrackId string, bytes []byte) error
+	StoreTrackPayload(track *art.Track, bytes []byte) error
 	Tracks(artistID string) (map[string]*art.Track, error)
 	Track(artistID string, artistTrackID string) (*art.Track, error)
-	TrackFilePath(artistID string, artistTrackID string) string
+	TrackFilePath(track *art.Track) string
 
 	// Get and store network info.
 	StorePeer(peer *art.Peer) error
 	Peers() (map[string]*art.Peer, error)
 	Peer(pubkey string) (*art.Peer, error)
+}
+
+type Signer interface {
+	Sign(*art.ArtResources) (*art.ArtistPublication, error)
 }
 
 var (
@@ -130,23 +134,7 @@ func NewLightningClient(cfg *Config) (lnrpc.LightningClient, error) {
 func (s *AustkServer) Start() error {
 	const logPrefix = "AustkServer Start "
 
-	artists, err := s.artServer.Artists()
-	if err != nil {
-		log.Printf(logPrefix+"artServer.Artists error: %v", err)
-		return err
-	}
-	log.Printf(logPrefix+"%v artists:", len(artists))
-	for artistID, artist := range artists {
-		log.Printf(logPrefix+"\tArtist id %s: %v", artistID, artist)
-		tracks, err := s.artServer.Tracks(artistID)
-		if err != nil {
-			log.Printf(logPrefix+"artServer.Tracks error: %v", err)
-			return err
-		}
-		for trackID, track := range tracks {
-			log.Printf("\t\tTrack id: %s: %v", trackID, track)
-		}
-	}
+	s.debugPrintInventory()
 
 	// Publish this austk node as the Peer with this server's Pubkey.
 	pubkey, err := s.Pubkey()
@@ -189,6 +177,27 @@ func (s *AustkServer) Start() error {
 	return err
 }
 
+func (s *AustkServer) debugPrintInventory() {
+	const logPrefix = "server debugPrintInventory "
+	
+	artists, err := s.artServer.Artists()
+	if err != nil {
+		log.Printf(logPrefix+"artServer.Artists error: %v", err)
+		return
+	}
+	log.Printf(logPrefix+"%v artists:", len(artists))
+	for artistID, artist := range artists {
+		log.Printf(logPrefix+"\tArtist id %s: %v", artistID, artist)
+		tracks, err := s.artServer.Tracks(artistID)
+		if err != nil {
+			log.Printf(logPrefix+"artServer.Tracks error: %v", err)
+		}
+		for trackID, track := range tracks {
+			log.Printf("\t\tTrack id: %s: %v", trackID, track)
+		}
+	}
+}
+
 // serve starts listening for and handling requests to austk endpoints.
 func (server *AustkServer) serve() (err error) {
 	const logPrefix = "server serve "
@@ -213,12 +222,19 @@ func (server *AustkServer) getAllArtHandler(w http.ResponseWriter, req *http.Req
 	// preferred bit rate, or other conditions TBD.
 	// Maybe read any follow-back peer URL as well.
 
+	log.Printf(logPrefix+"configured artist: %s", server.config.ArtistId)
+	publishingArtist, err := server.artServer.Artist(server.config.ArtistId)
+	if err != nil {
+		log.Printf(logPrefix+"Failed to retrieve configured artist %s, error: %v", server.config.ArtistId, err)
+	}
+
 	artists, err := server.artServer.Artists()
 	if err != nil {
 		log.Printf(logPrefix+"SelectAllArtists error: %v", err)
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
+	log.Printf(logPrefix+"found %d artists", len(artists))
 	artistArray := make([]*art.Artist, 0, len(artists))
 	trackArray := make([]*art.Track, 0)
 	log.Println(logPrefix + "Select all artists:")
@@ -245,10 +261,9 @@ func (server *AustkServer) getAllArtHandler(w http.ResponseWriter, req *http.Req
 	peerArray := make([]*art.Peer, 0, len(peers))
 	for _, peer := range peers {
 		log.Printf("\tPeer: %v", peer)
-		peerCopy := *peer
-		peerArray = append(peerArray, &peerCopy)
+		peerArray = append(peerArray, peer)
 	}
-	reply := art.ArtReply{
+	resources := art.ArtResources{
 		Artists: artistArray,
 		Tracks:  trackArray,
 		Peers:   peerArray,
@@ -256,21 +271,47 @@ func (server *AustkServer) getAllArtHandler(w http.ResponseWriter, req *http.Req
 
 	ctx := context.Background()
 	var signMessageInput lnrpc.SignMessageRequest
-	data, err := proto.Marshal(&reply)
+	marshaledResources, err := proto.Marshal(&resources)
 	if err != nil {
+		log.Printf(logPrefix+"Marshal %v, error: %v", resources, err)
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
-	signMessageInput.Msg = []byte(data)
+	signMessageInput.Msg = marshaledResources
 	signMessageResult, err := server.lightningClient.SignMessage(ctx, &signMessageInput)
 	if err != nil {
 		log.Printf(logPrefix+"SignMessage error: %v", err)
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
-	log.Printf(logPrefix+"Signed message %s, signature: %v", data, signMessageResult.Signature)
+	publicationSignature := signMessageResult.Signature
+	log.Printf(logPrefix+"Signed message %v, signature: %v", resources, publicationSignature)
+
+	publication := art.ArtistPublication{
+		Artist:                 publishingArtist,
+		Signature:              publicationSignature,
+		SerializedArtResources: marshaledResources,
+	}
+	responseData, err := proto.Marshal(&publication)
+	if err != nil {
+		log.Printf(logPrefix+"Marshal %v, error: %v", publication, err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
 	w.WriteHeader(http.StatusOK)
-	w.Write(data)
+	w.Write(responseData)
+}
+
+func ValidatePublication(publication *art.ArtistPublication) (*art.ArtResources, error) {
+	const logPrefix = "server ValidatePublication "
+
+	artResources := art.ArtResources{}
+	err := proto.Unmarshal(publication.SerializedArtResources, &artResources)
+	if err != nil {
+		log.Printf(logPrefix+"Unmarshal error: %v", err)
+		return nil, err
+	}
+	return &artResources, nil
 }
 
 // Pubkey returns the pubkey for the lnd server,
@@ -362,7 +403,7 @@ func (server *AustkServer) getArtHandler(w http.ResponseWriter, req *http.Reques
 	}
 	log.Printf(logPrefix+"artist: %v, track: %v", artistID, artistTrackID)
 
-	_, err := server.artServer.Track(artistID, artistTrackID)
+	track, err := server.artServer.Track(artistID, artistTrackID)
 	if err != nil {
 		// TODO: if requested track isn't found, error with 404 Not Found
 		log.Printf(logPrefix+"failed to select track, error: %v", err)
@@ -373,7 +414,7 @@ func (server *AustkServer) getArtHandler(w http.ResponseWriter, req *http.Reques
 	// TODO: to require payment, check for secret received in receipt for paying invoice
 	// If valid secret is not supplied, issue a Lightning invoice.
 	// For now, skip the payment mechanics and serve the requested resource immediately.
-	trackFilePath := server.artServer.TrackFilePath(artistID, artistTrackID)
+	trackFilePath := server.artServer.TrackFilePath(track)
 	mp3, err := OpenMp3ToRead(trackFilePath)
 	if err != nil {
 		log.Printf(logPrefix+"OpenMp3ForTrackToRead %s %s, error: %v", artistID, artistTrackID, err)

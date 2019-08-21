@@ -10,6 +10,10 @@ import (
 	"log"
 )
 
+const (
+	mockPubkey   string = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef50"
+)
+
 type MockLightningClient struct {
 }
 

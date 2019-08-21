@@ -24,6 +24,10 @@ type Client struct {
 	connectionCancel context.CancelFunc
 }
 
+type Verifier interface {
+	VerifyPublication(publication *art.ArtistPublication) (*art.ArtResources, error)
+}
+
 // NewClient creates a new austk Client to communicate over torProxy with peerAddress.
 func NewClient(torProxy string, peerAddress string) (*Client, error) {
 	const logPrefix = "client NewClient "
@@ -53,40 +57,48 @@ func (client *Client) CloseConnection() {
 	client.connectionCancel()
 }
 
-// SyncFromPeer gets art-directory records (music metadata) from client's peer over tor and imports it into db.
-func (client *Client) SyncFromPeer(localStorage ArtServer) ([]*art.Track, error) {
+// SyncFromPeer gets art resources (music metadata) from client's peer over tor
+// and stores the resources in localStorage.
+// It does not retrieve the mp3 payloads but just the metadata.
+func (client *Client) SyncFromPeer(verifier Verifier, localStorage ArtServer) (*art.ArtResources, error) {
 	const logPrefix = "client SyncFromPeer "
 
-	reply, err := client.GetAllArtByTor()
+	publication, err := client.GetAllArtByTor()
 	if err != nil {
 		log.Fatalf(logPrefix+"GetAllArtByTor <-%v<-%v error: %v", client.torProxy, client.peerAddress, err)
+		return nil, err
 	}
 
-	err = client.storeArtReply(reply, localStorage)
+	resources, err := verifier.VerifyPublication(publication)
+	if err != nil {
+		log.Fatalf(logPrefix+"validatePublication error: %v", err)
+		return nil, err
+	}
+	err = client.storeArtResources(resources, localStorage)
 	if err != nil {
 		log.Fatalf(logPrefix+"importArtReply error: %v", err)
 	}
-	return reply.Tracks, err
+	return resources, err
 }
 
-func (client *Client) storeArtReply(artReply *art.ArtReply, localStorage ArtServer) (err error) {
+func (client *Client) storeArtResources(artResources *art.ArtResources, localStorage ArtServer) (err error) {
 	const logPrefix = "austk importArtReply "
 	var errors []error
-	for _, artist := range artReply.Artists {
+	for _, artist := range artResources.Artists {
 		err = localStorage.StoreArtist(artist)
 		if err != nil {
 			errors = append(errors, err)
 		}
 	}
 
-	for _, track := range artReply.Tracks {
+	for _, track := range artResources.Tracks {
 		err = localStorage.StoreTrack(track)
 		if err != nil {
 			errors = append(errors, err)
 		}
 	}
 
-	for _, peer := range artReply.Peers {
+	for _, peer := range artResources.Peers {
 		err = localStorage.StorePeer(peer)
 		if err != nil {
 			errors = append(errors, err)
@@ -133,7 +145,7 @@ func (client *Client) DownloadTracks(tracks []*art.Track, localStorage ArtServer
 			continue // to next track
 		}
 
-		err = localStorage.StoreTrackPayload(track.ArtistId, track.ArtistTrackId, replyBytes)
+		err = localStorage.StoreTrackPayload(track, replyBytes)
 		if err != nil {
 			log.Printf(logPrefix+"Failed StoreTrackPayload, error: %v", err)
 			errors = append(errors, err)
@@ -153,7 +165,7 @@ func (client *Client) DownloadTracks(tracks []*art.Track, localStorage ArtServer
 }
 
 // GetAllArtByTor gets the art-directory music metadata over tor from the client's peer.
-func (client *Client) GetAllArtByTor() (*art.ArtReply, error) {
+func (client *Client) GetAllArtByTor() (*art.ArtistPublication, error) {
 	const logPrefix = "client GetAllArtByTor "
 	response, err := client.torClient.Get("http://" + client.peerAddress)
 	if err != nil {
@@ -169,7 +181,7 @@ func (client *Client) GetAllArtByTor() (*art.ArtReply, error) {
 		log.Printf(logPrefix+"ReadAll response.Body error: %v", err)
 		return nil, err
 	}
-	reply := &art.ArtReply{}
+	reply := &art.ArtistPublication{}
 	err = proto.Unmarshal(replyBytes, reply)
 	if err != nil {
 		log.Printf(logPrefix+"Unmarshal reply error: %v", err)
@@ -207,7 +219,7 @@ func (client *Client) GetTrack(artistID string, artistTrackID string) ([]byte, e
 // GetAllArtByGrpc is similar to GetAllArtByTor but uses Grpc rather than raw http over tor.
 // This is dead code for now, as GetAllArtByTor seems to expose the needed functionality.
 // This code may be revived if fields must be specified in the ArtRequest, e.g. for filtering results.
-func (client *Client) GetAllArtByGrpc() (*art.ArtReply, error) {
+func (client *Client) GetAllArtByGrpc() (*art.ArtistPublication, error) {
 	const logPrefix = "client GetAllArtByGrpc "
 	torClient, err := tor.Start(client.connectionCtx, nil)
 	if err != nil {
@@ -246,12 +258,12 @@ func (client *Client) GetAllArtByGrpc() (*art.ArtReply, error) {
 
 	log.Printf(logPrefix+"GetArt from peer %v...", client.peerAddress)
 	artClient := art.NewArtClient(peerConnection)
-	artReply, err := artClient.GetArt(client.connectionCtx, &artRequest)
+	publication, err := artClient.GetArt(client.connectionCtx, &artRequest)
 	if err != nil {
 		log.Printf(logPrefix+"artClient.GetArt error: %v", err)
 		return nil, err
 	}
-	return artReply, nil
+	return publication, nil
 }
 
 func newTorClient(torProxy string) (*http.Client, error) {

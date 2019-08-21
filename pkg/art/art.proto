@@ -3,7 +3,7 @@ syntax = "proto3";
 package net.audiostrike.art;
 
 service Art {
-  rpc GetArt (ArtRequest) returns (ArtReply) {}
+  rpc GetArt (ArtRequest) returns (ArtistPublication) {}
 }
 
 message ArtRequest {
@@ -14,17 +14,23 @@ message ArtRequest {
   //string filter = 4; // If specified, only get art matching this filter, e.g. "satperhour<100"
 }
 
-message ArtReply {
-  repeated Artist artists = 1;
-  repeated Album albums = 2;
-  repeated Track tracks = 3;
-  repeated Peer peers = 4;
-}
-
 message Artist {
   string artist_id = 1; // Lowercase id, no spaces, no punctuation, e.g. "aliceinchains"
   string name = 2; // Full name with proper casing, space, and punctuation, e.g. "Alice in Chains"
   string pubkey = 3; // Public key used to sign tracks and receive payment for music streaming/downloads.
+}
+
+message ArtistPublication {
+  Artist artist = 1; // artist who is publishing these ArtResources
+  string signature = 2; // signature by above artist.pubkey over the following marshaled ArtResources
+  bytes serialized_art_resources = 3; // marshaled ArtResources
+}
+
+message ArtResources {
+  repeated Artist artists = 1;
+  repeated Album albums = 2;
+  repeated Track tracks = 3;
+  repeated Peer peers = 4;
 }
 
 message Album {

@@ -7,8 +7,16 @@ import (
 )
 
 const (
-	rootPath         = "testart"
+	rootPath = "testart"
 )
+
+type MockSigner struct{}
+
+func (s MockSigner) Sign(resources *art.ArtResources) (*art.ArtistPublication, error) {
+	return &art.ArtistPublication{}, nil
+}
+
+var mockSigner MockSigner
 
 func TestTrack(t *testing.T) {
 	fileServer, err := NewFileServer(rootPath)
@@ -38,7 +46,7 @@ func TestTrack(t *testing.T) {
 			Title:            "Test Put 3"},
 	}
 	for _, testTrack := range testTracks {
-		err = fileServer.StoreTrack(&testTrack)
+		err = fileServer.StoreTrack(&testTrack, mockSigner)
 		if err != nil {
 			t.Errorf("Failed to store track %v, error: %v", testTrack, err)
 		}
@@ -69,14 +77,62 @@ func TestAlbumFiles(t *testing.T) {
 		ArtistAlbumId:    testAlbumId,
 		AlbumTrackNumber: 1,
 		ArtistTrackId:    testAlbumId + "-1.SomeTrack",
-		Title:            "Some Track"})
+		Title:            "Some Track"}, mockSigner)
 	if err != nil {
 		t.Errorf("StoreTrack failed  for %s/%s", testArtistId, testAlbumId)
 	}
 
-	// Check the db for the track.
+	// Check the file server for the album track.
 	tracks, err := fileServer.AlbumTracks(testArtistId, testAlbumId)
 	if err != nil || len(tracks) == 0 {
-		t.Errorf("GetAlbumTracks failed to get tracks for \"%s\", got only %v", testAlbumId, tracks)
+		t.Errorf("AlbumTracks failed to get tracks for \"%s\", got only %v", testAlbumId, tracks)
+	}
+	fetchedTrack1 := tracks[1]
+	if fetchedTrack1.ArtistAlbumId != testAlbumId {
+		t.Errorf("First album track fetched had the wrong album id (%s), expected %s",
+			testAlbumId, fetchedTrack1.ArtistAlbumId)
+	}
+}
+
+func TestPeers(t *testing.T) {
+	// Test peer with known id
+	fileServer, err := NewFileServer(rootPath)
+	if err != nil {
+		t.Errorf("NewFileServer(%s), error: %v", rootPath, err)
+	}
+
+	const (
+		testArtistId = "tester"
+	)
+
+	mockArtist := &art.Artist{
+		ArtistId: testArtistId,
+		Name:     "Artist McTester",
+		Pubkey:   mockPubkey}
+	resources, err := fileServer.StoreArtist(mockArtist, mockSigner)
+	if err != nil {
+		t.Errorf("StoreArtist failed for %s with pubkey %s, error: %v", testArtistId, mockPubkey, err)
+	}
+	if len(resources.Artists) == 0 {
+		t.Fatalf("no artists")
+	}
+
+	err = fileServer.StorePeer(mockArtist, &art.Peer{Pubkey: mockPubkey}, mockSigner)
+	if err != nil {
+		t.Errorf("StorePeer failed for pubkey %s, error: %v", mockPubkey, err)
+	}
+
+	// Check the file server for the album track.
+	peers, err := fileServer.Peers()
+	if err != nil || len(peers) == 0 {
+		t.Errorf("Peers failed to get added peer, error: %v", err)
+	}
+	fetchedPeer := peers[mockPubkey]
+	if fetchedPeer == nil {
+		t.Errorf("Peer failed to fetch for pubkey %s", mockPubkey)
+	}
+	if fetchedPeer.Pubkey != mockPubkey {
+		t.Errorf("Peer fetched had the wrong pubkey (%s), expected %s",
+			fetchedPeer.Pubkey, mockPubkey)
 	}
 }
