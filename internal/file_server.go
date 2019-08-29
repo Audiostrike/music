@@ -149,10 +149,16 @@ func (fileServer *FileServer) storeAllArtists() (*art.ArtResources, error) {
 	return &resources, fmt.Errorf(logPrefix + "not implemented")
 }
 
-func (fileServer *FileServer) publish(publishingArtist *art.Artist, resources *art.ArtResources, signer Signer) error {
+func (fileServer *FileServer) publish(resources *art.ArtResources, publisher Publisher) error {
 	const logPrefix = "FileServer publish "
 
-	publication, err := signer.Sign(resources)
+	publishingArtist, err := publisher.Artist()
+	if err != nil {
+		log.Fatalf(logPrefix+"fail to publish %v without an artist, error: %v", resources, err)
+		return err
+	}
+
+	publication, err := publisher.Sign(resources)
 	if err != nil {
 		log.Printf(logPrefix+"failed to sign resources %v, error: %v", resources, err)
 		return err
@@ -246,7 +252,7 @@ func (fileServer *FileServer) Albums(artistId string) (map[string]*art.Album, er
 }
 
 // storeArtist saves a file with the given artist's details, albums, tracks, and peers.
-func (fileServer *FileServer) StoreArtist(artist *art.Artist, signer Signer) (*art.ArtResources, error) {
+func (fileServer *FileServer) StoreArtist(artist *art.Artist, publisher Publisher) (*art.ArtResources, error) {
 	const logPrefix = "fileServer storeToFileSystem "
 
 	publishedArtist := fileServer.artists[artist.ArtistId]
@@ -281,7 +287,7 @@ func (fileServer *FileServer) StoreArtist(artist *art.Artist, signer Signer) (*a
 		Peers:   peers,
 	}
 
-	err := fileServer.publish(artist, &resources, signer)
+	err := fileServer.publish(&resources, publisher)
 
 	return &resources, err
 }
@@ -314,13 +320,21 @@ func (fileServer *FileServer) AlbumTracks(artistID string, albumID string) (map[
 	return tracksForArtistAlbum, nil
 }
 
-// StorePeer stores the peer in the in-memory database and defers saving to the file system.
-func (fileServer *FileServer) StorePeer(artist *art.Artist, peer *art.Peer, signer Signer) error {
-	// find the artist with the same pubkey
+// StorePeer stores the peer in the in-memory database
+// and saves it to the publisher's artist directory file system.
+func (fileServer *FileServer) StorePeer(peer *art.Peer, publisher Publisher) error {
+	const logPrefix = "FileServer StorePeer "
+
+	artist, err := publisher.Artist()
+	if err != nil {
+		log.Fatalf(logPrefix+"failed to get Artist for publisher %v, error: %v", publisher, err)
+		return err
+	}
+
 	log.Printf("FileServer StorePeer artist pubkey %s, peer pubkey %s", artist.Pubkey, peer.Pubkey)
 	if artist.Pubkey == peer.Pubkey {
 		fileServer.peers[peer.Pubkey] = peer
-		_, err := fileServer.StoreArtist(artist, signer)
+		_, err := fileServer.StoreArtist(artist, publisher)
 		if err != nil {
 			log.Printf("fileServer StorePeer failed to store artist %s, error: %v",
 				artist.ArtistId, err)
@@ -346,7 +360,7 @@ func (fileServer *FileServer) Peers() (map[string]*art.Peer, error) {
 
 // StoreTrack stores track in the in-memory database
 // and eventually "publishes" (flushes) all resources to the file system.
-func (fileServer *FileServer) StoreTrack(track *art.Track, signer Signer) error {
+func (fileServer *FileServer) StoreTrack(track *art.Track, publisher Publisher) error {
 	const logPrefix = "FileServer StoreTrack "
 
 	tracksForArtist := fileServer.tracks[track.ArtistId]
@@ -372,7 +386,7 @@ func (fileServer *FileServer) StoreTrack(track *art.Track, signer Signer) error 
 	// If we know this track's artist's pubkey, asynchronously record the artist's publication.
 	artist := fileServer.artists[track.ArtistId]
 	if artist != nil && artist.Pubkey != "" {
-		_, err := fileServer.StoreArtist(artist, signer)
+		_, err := fileServer.StoreArtist(artist, publisher)
 		if err != nil {
 			log.Printf(logPrefix+"filed to store artist %s, error: %v", artist.ArtistId, err)
 			return err
@@ -381,10 +395,10 @@ func (fileServer *FileServer) StoreTrack(track *art.Track, signer Signer) error 
 	return nil
 }
 
-func (fileServer *FileServer) StoreTrackPayload(artistID string, artistTrackID string, payload []byte) error {
+func (fileServer *FileServer) StoreTrackPayload(track *art.Track, payload []byte) error {
 	const logPrefix = "FileServer StoreTrackPayload "
 
-	filename := fileServer.mp3Filename(artistID, artistTrackID)
+	filename := fileServer.mp3Filename(track)
 	containerDirectory := filepath.Dir(filename)
 
 	err := os.MkdirAll(containerDirectory, 0755)
@@ -401,8 +415,8 @@ func (fileServer *FileServer) Track(artistID string, trackID string) (*art.Track
 	return fileServer.tracks[artistID][trackID], nil
 }
 
-func (fileServer *FileServer) TrackFilePath(artistID string, artistTrackID string) string {
-	return fileServer.mp3Filename(artistID, artistTrackID)
+func (fileServer *FileServer) TrackFilePath(track *art.Track) string {
+	return fileServer.mp3Filename(track)
 }
 
 func (fileServer *FileServer) artPath(artist *art.Artist) string {
@@ -414,7 +428,7 @@ func (fileServer *FileServer) publicationPath(artist *art.Artist) string {
 	return filepath.Join(fileServer.rootPath, artist.ArtistId, artist.Pubkey+".pub")
 }
 
-func (fileServer *FileServer) mp3Filename(artistID string, artistTrackID string) (filename string) {
+func (fileServer *FileServer) mp3Filename(track *art.Track) (filename string) {
 	// TODO: sanitize filepath so peer cannot write outside the base path dir sandbox.
-	return filepath.Join(fileServer.rootPath, artistID, artistTrackID+".mp3")
+	return filepath.Join(fileServer.rootPath, track.ArtistId, track.ArtistTrackId+".mp3")
 }

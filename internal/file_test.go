@@ -7,16 +7,34 @@ import (
 )
 
 const (
-	rootPath = "testart"
+	rootPath     = "testart"
+	testArtistId = "tester"
 )
 
-type MockSigner struct{}
+var mockArtist = art.Artist{
+	ArtistId: testArtistId,
+	Name:     "Artist McTester",
+	Pubkey:   mockPubkey}
 
-func (s MockSigner) Sign(resources *art.ArtResources) (*art.ArtistPublication, error) {
+type MockPublisher struct{}
+
+func (s *MockPublisher) Artist() (*art.Artist, error) {
+	return &mockArtist, nil
+}
+
+func (s *MockPublisher) Sign(resources *art.ArtResources) (*art.ArtistPublication, error) {
 	return &art.ArtistPublication{}, nil
 }
 
-var mockSigner MockSigner
+func (s *MockPublisher) Verify(publication *art.ArtistPublication) (*art.ArtResources, error) {
+	return &art.ArtResources{}, nil
+}
+
+func (s *MockPublisher) VerifyArtist(artist *art.Artist) error {
+	return nil
+}
+
+var mockPublisher MockPublisher
 
 func TestTrack(t *testing.T) {
 	fileServer, err := NewFileServer(rootPath)
@@ -46,7 +64,7 @@ func TestTrack(t *testing.T) {
 			Title:            "Test Put 3"},
 	}
 	for _, testTrack := range testTracks {
-		err = fileServer.StoreTrack(&testTrack, mockSigner)
+		err = fileServer.StoreTrack(&testTrack, &mockPublisher)
 		if err != nil {
 			t.Errorf("Failed to store track %v, error: %v", testTrack, err)
 		}
@@ -77,7 +95,7 @@ func TestAlbumFiles(t *testing.T) {
 		ArtistAlbumId:    testAlbumId,
 		AlbumTrackNumber: 1,
 		ArtistTrackId:    testAlbumId + "-1.SomeTrack",
-		Title:            "Some Track"}, mockSigner)
+		Title:            "Some Track"}, &mockPublisher)
 	if err != nil {
 		t.Errorf("StoreTrack failed  for %s/%s", testArtistId, testAlbumId)
 	}
@@ -101,15 +119,7 @@ func TestPeers(t *testing.T) {
 		t.Errorf("NewFileServer(%s), error: %v", rootPath, err)
 	}
 
-	const (
-		testArtistId = "tester"
-	)
-
-	mockArtist := &art.Artist{
-		ArtistId: testArtistId,
-		Name:     "Artist McTester",
-		Pubkey:   mockPubkey}
-	resources, err := fileServer.StoreArtist(mockArtist, mockSigner)
+	resources, err := fileServer.StoreArtist(&mockArtist, &mockPublisher)
 	if err != nil {
 		t.Errorf("StoreArtist failed for %s with pubkey %s, error: %v", testArtistId, mockPubkey, err)
 	}
@@ -117,7 +127,7 @@ func TestPeers(t *testing.T) {
 		t.Fatalf("no artists")
 	}
 
-	err = fileServer.StorePeer(mockArtist, &art.Peer{Pubkey: mockPubkey}, mockSigner)
+	err = fileServer.StorePeer(&art.Peer{Pubkey: mockPubkey}, &mockPublisher)
 	if err != nil {
 		t.Errorf("StorePeer failed for pubkey %s, error: %v", mockPubkey, err)
 	}

@@ -84,9 +84,9 @@ func OpenDb(sqlDbName string, sqlDbUser string, sqlDbPassword string) (*AustkDb,
 	dataSource := fmt.Sprintf("%s:%s@tcp(localhost)/%s", sqlDbUser, sqlDbPassword, sqlDbName)
 	sqlDb, err := sql.Open("mysql", dataSource)
 	if err != nil {
+		log.Fatalf(logPrefix+"failed to opened connection to db %v, error: %v", dataSource, err)
 		return nil, err
 	}
-	log.Printf(logPrefix+"Opened connection to db %v", dataSource)
 
 	db := &AustkDb{sqlDb: sqlDb}
 

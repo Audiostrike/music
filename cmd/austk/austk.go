@@ -8,6 +8,7 @@ import (
 	audiostrike "github.com/audiostrike/music/internal"
 	art "github.com/audiostrike/music/pkg/art"
 	flags "github.com/jessevdk/go-flags"
+	"path/filepath"
 )
 
 // main runs austk with config from command line, austk.config file, or defaults. `-help` for help:
@@ -67,18 +68,6 @@ func main() {
 		log.Fatalf(logPrefix+"Failed to open database, error: %v", err)
 	}
 
-	if cfg.AddMp3Filename != "" {
-		mp3, err := storeMp3File(cfg.AddMp3Filename, localStorage)
-		if err != nil {
-			log.Fatalf(logPrefix+"storeMp3File error: %v", err)
-		}
-		log.Printf(logPrefix+"addMp3File %s ok", cfg.AddMp3Filename)
-
-		if cfg.PlayMp3 {
-			mp3.PlayAndWait()
-		}
-	}
-
 	if cfg.PeerAddress != "" {
 		client, err := audiostrike.NewClient(cfg.TorProxy, cfg.PeerAddress)
 		if err != nil {
@@ -94,13 +83,24 @@ func main() {
 		client.CloseConnection()
 	}
 
-	var austkServer *audiostrike.AustkServer
-	if cfg.RunAsDaemon {
-		austkServer, err = injectLnd(cfg, localStorage)
+	austkServer, err := injectLnd(cfg, localStorage)
+	if err != nil {
+		log.Fatalf(logPrefix+"Failed to connect to lightning network, error: %v", err)
+	}
+
+	if cfg.AddMp3Filename != "" {
+		mp3, err := storeMp3File(cfg.AddMp3Filename, localStorage, austkServer)
 		if err != nil {
-			log.Fatalf(logPrefix+"Failed to connect to lightning network, error: %v", err)
+			log.Fatalf(logPrefix+"storeMp3File error: %v", err)
 		}
-		
+		log.Printf(logPrefix+"storeMp3File %s ok", cfg.AddMp3Filename)
+
+		if cfg.PlayMp3 {
+			mp3.PlayAndWait()
+		}
+	}
+
+	if cfg.RunAsDaemon {
 		log.Println(logPrefix + "Starting Audiostrike server...")
 		err = startServer(cfg, localStorage, austkServer)
 		if err != nil {
@@ -132,12 +132,13 @@ func main() {
 				cfg.TorProxy, peer.Host, err)
 		}
 
-		tracks, err := client.SyncFromPeer(localStorage)
+		resources, err := client.SyncFromPeer(localStorage)
 		if err != nil {
 			// Log misbehaving peer but continue with other peers.
 			log.Printf(logPrefix+"SyncFromPeer error: %v", err)
 			continue
 		}
+		tracks := resources.Tracks
 
 		if cfg.PlayMp3 {
 			log.Printf("playing tracks...")
@@ -165,7 +166,7 @@ func playTracks(tracks []*art.Track, rootDirPath string) error {
 	const logPrefix = "client playTracks "
 
 	for _, track := range tracks {
-		mp3FilePath := audiostrike.BuildMp3Filename(rootDirPath, track.ArtistId, track.ArtistTrackId)
+		mp3FilePath := filepath.Join(rootDirPath, track.ArtistId, track.ArtistTrackId+".mp3")
 		mp3, err := audiostrike.OpenMp3ToRead(mp3FilePath)
 		if err != nil {
 			log.Fatalf(logPrefix+"OpenMp3ToRead %v, error: %v", track, err)
@@ -179,7 +180,7 @@ func playTracks(tracks []*art.Track, rootDirPath string) error {
 // storeMp3File reads mp3 tags from the file named filename
 // and stores an art record for the track, for the artist, and for the album if relevant.
 // This lets the austk node host the mp3 track for the artist and collect payments to download/stream it.
-func storeMp3File(filename string, localStorage audiostrike.ArtServer) (*audiostrike.Mp3, error) {
+func storeMp3File(filename string, localStorage audiostrike.ArtServer, publisher audiostrike.Publisher) (*audiostrike.Mp3, error) {
 	const logPrefix = "austk storeMp3File "
 
 	mp3, err := audiostrike.OpenMp3ToRead(filename)
@@ -216,7 +217,7 @@ func storeMp3File(filename string, localStorage audiostrike.ArtServer) (*audiost
 		ArtistId: artistID,
 		Name:     artistName,
 	}
-	err = localStorage.StoreArtist(artist)
+	_, err = localStorage.StoreArtist(artist, publisher)
 	if err != nil {
 		log.Printf(logPrefix+"StoreArtist %v, error: %v", artist, err)
 		return nil, err
@@ -227,7 +228,7 @@ func storeMp3File(filename string, localStorage audiostrike.ArtServer) (*audiost
 		Title:         trackTitle,
 		ArtistAlbumId: artistAlbumID,
 	}
-	err = localStorage.StoreTrack(track)
+	err = localStorage.StoreTrack(track, publisher)
 	if err != nil {
 		log.Printf(logPrefix+"StoreTrack %v %v, error: %v", track, err)
 		return nil, err
@@ -239,7 +240,7 @@ func storeMp3File(filename string, localStorage audiostrike.ArtServer) (*audiost
 		return nil, err
 	}
 
-	err = localStorage.StoreTrackPayload(track.ArtistId, track.ArtistTrackId, trackPayload)
+	err = localStorage.StoreTrackPayload(track, trackPayload)
 	if err != nil {
 		log.Printf(logPrefix+"StoreTrackPayload for %s/%s with %d bytes, error: %v",
 			track.ArtistId, track.ArtistTrackId, len(trackPayload), err)
@@ -275,7 +276,7 @@ func startServer(cfg *audiostrike.Config, localStorage audiostrike.ArtServer, au
 		return err
 	}
 	artist.Pubkey = pubkey
-	err = localStorage.StoreArtist(artist)
+	_, err = localStorage.StoreArtist(artist, austkServer)
 	if err != nil {
 		log.Fatalf(logPrefix+"db.SetPubkeyForArtist %v, error: %v", cfg.ArtistId, err)
 		return err

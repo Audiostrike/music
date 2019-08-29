@@ -19,8 +19,19 @@ type DbServer struct {
 }
 
 // Store and get artist info.
-func (dbServer *DbServer) StoreArtist(artist *art.Artist) error {
-	return dbServer.db.PutArtist(artist)
+func (dbServer *DbServer) StoreArtist(artist *art.Artist, publisher Publisher) (*art.ArtResources, error) {
+	err := publisher.VerifyArtist(artist)
+	if err != nil {
+		return nil, err
+	}
+	
+	err = dbServer.db.PutArtist(artist)
+	if err != nil {
+		return nil, err
+	}
+	
+	return &art.ArtResources{
+	}, nil
 }
 
 func (dbServer *DbServer) Artists() (map[string]*art.Artist, error) {
@@ -41,21 +52,22 @@ func (dbServer *DbServer) Albums(artistID string) (map[string]*art.Album, error)
 }
 
 // Store and get track info.
-func (dbServer *DbServer) StoreTrack(track *art.Track) error {
+func (dbServer *DbServer) StoreTrack(track *art.Track, publisher Publisher) error {
+	// legacy store doesn't verify track with publisher
 	return dbServer.db.PutTrack(track)
 }
 
-func (dbServer *DbServer) StoreTrackPayload(artistID string, artistTrackID string, bytes []byte) error {
+func (dbServer *DbServer) StoreTrackPayload(track *art.Track, bytes []byte) error {
 	// Temporary hack to decouple from DB
 	fileServer, err := NewFileServer(dbServer.artRootPath)
 	if err != nil {
 		log.Printf("StoreTrackPayload to %s error: %v", dbServer.artRootPath, err)
 	}
-	return fileServer.StoreTrackPayload(artistID, artistTrackID, bytes)
+	return fileServer.StoreTrackPayload(track, bytes)
 }
 
-func (dbServer *DbServer) TrackFilePath(artistID string, artistTrackID string) string {
-	return filepath.Join(dbServer.artRootPath, artistID, artistTrackID+".mp3")
+func (dbServer *DbServer) TrackFilePath(track *art.Track) string {
+	return filepath.Join(dbServer.artRootPath, track.ArtistId, track.ArtistTrackId+".mp3")
 }
 
 func (dbServer *DbServer) Tracks(artistID string) (map[string]*art.Track, error) {
@@ -66,7 +78,8 @@ func (dbServer *DbServer) Track(artistId string, trackId string) (*art.Track, er
 	return dbServer.db.SelectTrack(artistId, trackId)
 }
 
-func (dbServer *DbServer) StorePeer(peer *art.Peer) error {
+func (dbServer *DbServer) StorePeer(peer *art.Peer, publisher Publisher) error {
+	// this legacy repository doesn't validate the peer with publisher
 	return dbServer.db.PutPeer(peer)
 }
 

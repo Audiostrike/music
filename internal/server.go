@@ -2,7 +2,6 @@ package audiostrike
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"net/http"
@@ -24,7 +23,7 @@ import (
 // Implementations may use a database, file system, test fixture, etc.
 type ArtServer interface {
 	// Get and store artist info.
-	StoreArtist(artist *art.Artist) error
+	StoreArtist(artist *art.Artist, publisher Publisher) (*art.ArtResources, error)
 	Artists() (map[string]*art.Artist, error)
 	Artist(artistId string) (*art.Artist, error)
 
@@ -33,20 +32,68 @@ type ArtServer interface {
 	Albums(artistId string) (map[string]*art.Album, error)
 
 	// Get and store Track info.
-	StoreTrack(track *art.Track) error
+	StoreTrack(track *art.Track, publisher Publisher) error
 	StoreTrackPayload(track *art.Track, bytes []byte) error
 	Tracks(artistID string) (map[string]*art.Track, error)
 	Track(artistID string, artistTrackID string) (*art.Track, error)
 	TrackFilePath(track *art.Track) string
 
 	// Get and store network info.
-	StorePeer(peer *art.Peer) error
+	StorePeer(peer *art.Peer, publisher Publisher) error
 	Peers() (map[string]*art.Peer, error)
 	Peer(pubkey string) (*art.Peer, error)
 }
 
-type Signer interface {
+type Publisher interface {
+	Artist() (*art.Artist, error)
 	Sign(*art.ArtResources) (*art.ArtistPublication, error)
+	Verify(*art.ArtistPublication) (*art.ArtResources, error)
+	VerifyArtist(*art.Artist) error
+}
+
+// Artist gets the Artist publishing interface
+func (server *AustkServer) Artist() (*art.Artist, error) {
+	return server.artServer.Artist(server.config.ArtistId)
+}
+
+func (server *AustkServer) Sign(resources *art.ArtResources) (*art.ArtistPublication, error) {
+	const logPrefix = "AustkServer Sign "
+
+	log.Printf(logPrefix + "sign %v", resources)
+	ctx := context.Background()
+	serializedResources, err := proto.Marshal(resources)
+	if err != nil {
+		return nil, err
+	}
+	signMessageInput := lnrpc.SignMessageRequest{Msg: serializedResources}
+	signMessageResponse, err := server.lightningClient.SignMessage(ctx, &signMessageInput)
+	if err != nil {
+		log.Fatalf(logPrefix+"lnd is not operational. SignMessage error: %v", err)
+		return nil, err
+	}
+	publishingArtist, err := server.Artist()
+	if err != nil {
+		log.Fatalf(logPrefix+"failed to get publishing artist, error: %v", err)
+		return nil, err
+	}
+	
+	return &art.ArtistPublication{
+		Artist: publishingArtist,
+		Signature: signMessageResponse.Signature,
+		SerializedArtResources: serializedResources,
+	}, nil
+}
+
+func (server *AustkServer) Verify(*art.ArtistPublication) (*art.ArtResources, error) {
+	return nil, fmt.Errorf("Verify not implemented")
+}
+
+func (server *AustkServer) VerifyArtist(artist *art.Artist) error {
+	if proto.Equal(artist, server.publishingArtist) {
+		return nil
+	} else {
+		return ErrArtNotFound
+	}
 }
 
 var (
@@ -56,11 +103,12 @@ var (
 
 // Server hosts the configured artist's art for http/tor clients who might pay the lnd node.
 type AustkServer struct {
-	config          *Config
-	artServer       ArtServer // interface for storing art in a file system, database, or test mock
-	httpServer      *http.Server
-	lightningClient lnrpc.LightningClient
-	quitChannel     chan bool
+	publishingArtist *art.Artist
+	config           *Config
+	artServer        ArtServer // interface for storing art in a file system, database, or test mock
+	httpServer       *http.Server
+	lightningClient  lnrpc.LightningClient
+	quitChannel      chan bool
 }
 
 // NewAustkServer creates a new network Server to serve the configured artist's art.
@@ -164,7 +212,7 @@ func (s *AustkServer) Start() error {
 			selfPeer.Port = restPort
 		}
 	}
-	err = s.artServer.StorePeer(selfPeer)
+	err = s.artServer.StorePeer(selfPeer, s)
 	if err != nil {
 		log.Printf(logPrefix+"PutPeer %v error: %v", pubkey, err)
 		return err
@@ -179,7 +227,7 @@ func (s *AustkServer) Start() error {
 
 func (s *AustkServer) debugPrintInventory() {
 	const logPrefix = "server debugPrintInventory "
-	
+
 	artists, err := s.artServer.Artists()
 	if err != nil {
 		log.Printf(logPrefix+"artServer.Artists error: %v", err)
@@ -202,7 +250,6 @@ func (s *AustkServer) debugPrintInventory() {
 func (server *AustkServer) serve() (err error) {
 	const logPrefix = "server serve "
 	httpRouter := mux.NewRouter()
-	httpRouter.HandleFunc("/artist/{id}", server.putArtistHandler).Methods("PUT")
 	httpRouter.HandleFunc("/", server.getAllArtHandler).Methods("GET")
 	httpRouter.HandleFunc("/art/{artist:[^/]*}/{track:.*}", server.getArtHandler).Methods("GET")
 	restAddress := fmt.Sprintf(":%d", server.config.RestPort)
@@ -360,33 +407,6 @@ func (server *AustkServer) WaitUntilQuitSignal() {
 func (server *AustkServer) Stop() error {
 	server.quitChannel <- true
 	return nil
-}
-
-// putArtistHandler handles a request to put an artist into the ArtService.
-func (server *AustkServer) putArtistHandler(w http.ResponseWriter, req *http.Request) {
-	const logPrefix = "AustkServer putArtistHandler "
-
-	requestVars := mux.Vars(req)
-	decoder := json.NewDecoder(req.Body)
-	var artist art.Artist
-	err := decoder.Decode(&artist)
-	if err != nil {
-		log.Printf(logPrefix+"Failed to decode artist from request, error: %v", err)
-		w.WriteHeader(http.StatusBadRequest)
-		// Should intelligible peers be notified, muted, or disconnected?
-		return
-	}
-	if artist.ArtistId != requestVars["artist"] {
-		// Should intelligible peers be notified, muted, or disconnected?
-		return
-	}
-	w.WriteHeader(http.StatusNotImplemented)
-	go func() {
-		err = server.artServer.StoreArtist(&artist)
-		if err != nil {
-			log.Printf(logPrefix+"Failed to put artist, error: %v", err)
-		}
-	}()
 }
 
 // getArtHandler handles requests to get a specified track by a specified artist.

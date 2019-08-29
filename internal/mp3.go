@@ -13,7 +13,7 @@ import (
 
 // Mp3 exposes the Tags (mp3 metadata) and bytes of a given .mp3 file.
 type Mp3 struct {
-	file             *os.File
+	path             string
 	buffer           []byte
 	length           int
 	position         int
@@ -22,17 +22,10 @@ type Mp3 struct {
 }
 
 // OpenMp3ToRead opens an mp3 file to read its data and tags (metadata)
-func OpenMp3ToRead(fileName string) (mp3 *Mp3, err error) {
-	// Read the file.
-	var file *os.File
-	file, err = os.Open(fileName)
-	if err != nil {
-		return
-	}
-
+func OpenMp3ToRead(path string) (mp3 *Mp3, err error) {
 	// Read the mp3 tags.
 	var id3File *mikkyangid3.File
-	id3File, err = mikkyangid3.OpenForRead(fileName)
+	id3File, err = mikkyangid3.OpenForRead(path)
 	if err != nil {
 		return
 	}
@@ -45,8 +38,8 @@ func OpenMp3ToRead(fileName string) (mp3 *Mp3, err error) {
 
 	// Return the Mp3 struct with the file and mp3 tags.
 	mp3 = &Mp3{
-		file: file,
-		Tags: tags,
+		path: path,
+		Tags:     tags,
 	}
 	return
 }
@@ -81,18 +74,30 @@ func (mp3 *Mp3) ReadBytes() ([]byte, error) {
 	}
 
 	// Otherwise read the bytes from the file into buffer.
-	fileInfo, err := mp3.file.Stat()
+	file, err := os.Open(mp3.path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	fileInfo, err := file.Stat()
 	if err == nil {
 		mp3.buffer = make([]byte, fileInfo.Size())
-		_, err = mp3.file.Read(mp3.buffer)
+		_, err = file.Read(mp3.buffer)
 	}
 	return mp3.buffer, err
 }
 
 func (mp3 *Mp3) PlayAndWait() error {
-	trackStreamer, format, err := faifacemp3.Decode(mp3.file)
+	file, err := os.Open(mp3.path)
 	if err != nil {
-		log.Printf("Failed to decode mp3, error: %v", err)
+		return err
+	}
+	defer file.Close()
+	trackStreamer, format, err := faifacemp3.Decode(file)
+	if err != nil {
+		stat, _ := file.Stat()
+		log.Printf("Failed to decode mp3 %v, error: %v", stat, err)
 		return err
 	}
 	defer trackStreamer.Close()

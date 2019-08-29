@@ -65,11 +65,11 @@ func (s *MockArtServer) Peers() (map[string]*art.Peer, error) {
 	return s.peers, nil
 }
 
-func (s *MockArtServer) StoreArtist(artist *art.Artist) error {
-	return fmt.Errorf("not implemented")
+func (s *MockArtServer) StoreArtist(artist *art.Artist, publisher Publisher) (*art.ArtResources, error) {
+	return nil, fmt.Errorf("not implemented")
 }
 
-func (s *MockArtServer) StorePeer(peer *art.Peer) error {
+func (s *MockArtServer) StorePeer(peer *art.Peer, publisher Publisher) error {
 	for i, old := range s.peers {
 		if old.Pubkey == peer.Pubkey {
 			s.peers[i] = peer
@@ -95,7 +95,7 @@ func (s *MockArtServer) TrackFilePath(track *art.Track) string {
 	return filepath.Join(cfg.ArtDir, track.ArtistId, track.ArtistTrackId+".mp3")
 }
 
-func (s *MockArtServer) StoreTrack(track *art.Track) error {
+func (s *MockArtServer) StoreTrack(track *art.Track, publisher Publisher) error {
 	s.tracks[track.ArtistId][track.ArtistTrackId] = track
 	return nil
 }
