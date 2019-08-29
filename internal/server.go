@@ -23,7 +23,7 @@ import (
 // Implementations may use a database, file system, test fixture, etc.
 type ArtServer interface {
 	// Get and store artist info.
-	StoreArtist(artist *art.Artist, publisher Publisher) (*art.ArtResources, error)
+	StoreArtist(artist *art.Artist, publisher Publisher) error
 	Artists() (map[string]*art.Artist, error)
 	Artist(artistId string) (*art.Artist, error)
 
@@ -48,7 +48,6 @@ type Publisher interface {
 	Artist() (*art.Artist, error)
 	Sign(*art.ArtResources) (*art.ArtistPublication, error)
 	Verify(*art.ArtistPublication) (*art.ArtResources, error)
-	VerifyArtist(*art.Artist) error
 }
 
 // Artist gets the Artist publishing interface
@@ -59,7 +58,7 @@ func (server *AustkServer) Artist() (*art.Artist, error) {
 func (server *AustkServer) Sign(resources *art.ArtResources) (*art.ArtistPublication, error) {
 	const logPrefix = "AustkServer Sign "
 
-	log.Printf(logPrefix + "sign %v", resources)
+	log.Printf(logPrefix+"sign %v", resources)
 	ctx := context.Background()
 	serializedResources, err := proto.Marshal(resources)
 	if err != nil {
@@ -76,10 +75,10 @@ func (server *AustkServer) Sign(resources *art.ArtResources) (*art.ArtistPublica
 		log.Fatalf(logPrefix+"failed to get publishing artist, error: %v", err)
 		return nil, err
 	}
-	
+
 	return &art.ArtistPublication{
-		Artist: publishingArtist,
-		Signature: signMessageResponse.Signature,
+		Artist:                 publishingArtist,
+		Signature:              signMessageResponse.Signature,
 		SerializedArtResources: serializedResources,
 	}, nil
 }
@@ -135,14 +134,15 @@ func NewAustkServer(cfg *Config, artServer ArtServer, lightningClient lnrpc.Ligh
 }
 
 func NewLightningClient(cfg *Config) (lnrpc.LightningClient, error) {
-	const logPrefix = "server newLndClient "
+	const logPrefix = "server NewLightningClient "
 
 	// Get the TLS credentials for the lnd server.
 	// The second paramater here is serverNameOverride, set to ""
 	// except to override the virtual host name of authority in test requests.
 	lndTlsCreds, err := credentials.NewClientTLSFromFile(cfg.CertFilePath, "")
 	if err != nil {
-		log.Printf(logPrefix+"lnd credentials NewClientTLSFromFile error: %v", err)
+		log.Printf(logPrefix+"failed to get tls credentials from %s, error: %v",
+			cfg.CertFilePath, err)
 		return nil, err
 	}
 
@@ -162,7 +162,6 @@ func NewLightningClient(cfg *Config) (lnrpc.LightningClient, error) {
 
 	lndOpts := []grpc.DialOption{
 		grpc.WithTransportCredentials(lndTlsCreds),
-		grpc.WithBlock(),
 		grpc.WithPerRPCCredentials(macaroons.NewMacaroonCredential(lndMacaroon)),
 	}
 

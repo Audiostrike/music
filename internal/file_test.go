@@ -30,10 +30,6 @@ func (s *MockPublisher) Verify(publication *art.ArtistPublication) (*art.ArtReso
 	return &art.ArtResources{}, nil
 }
 
-func (s *MockPublisher) VerifyArtist(artist *art.Artist) error {
-	return nil
-}
-
 var mockPublisher MockPublisher
 
 func TestTrack(t *testing.T) {
@@ -119,12 +115,9 @@ func TestPeers(t *testing.T) {
 		t.Errorf("NewFileServer(%s), error: %v", rootPath, err)
 	}
 
-	resources, err := fileServer.StoreArtist(&mockArtist, &mockPublisher)
+	err = fileServer.StoreArtist(&mockArtist, &mockPublisher)
 	if err != nil {
 		t.Errorf("StoreArtist failed for %s with pubkey %s, error: %v", testArtistId, mockPubkey, err)
-	}
-	if len(resources.Artists) == 0 {
-		t.Fatalf("no artists")
 	}
 
 	err = fileServer.StorePeer(&art.Peer{Pubkey: mockPubkey}, &mockPublisher)

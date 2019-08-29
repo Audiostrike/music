@@ -23,11 +23,11 @@ type Client struct {
 	connectionCtx    context.Context
 	connectionCancel context.CancelFunc
 
-	// publishingArtist, resources, and signatures are local copies of
+	// remotePublisherArtist, resources, and signatures are local copies of
 	// art resources published by this peer's publishing artist.
-	publishingArtist *art.Artist
-	resources map[*art.ArtistPublication] *art.ArtResources
-	signatures map[*art.ArtResources] string
+	remotePublisherArtist *art.Artist
+	resources             map[*art.ArtistPublication]*art.ArtResources
+	signatures            map[*art.ArtResources]string
 }
 
 // NewClient creates a new austk Client to communicate over torProxy with peerAddress.
@@ -49,6 +49,8 @@ func NewClient(torProxy string, peerAddress string) (*Client, error) {
 		connectionCtx:    connectionCtx,
 		connectionCancel: connectionCancel,
 		torClient:        torClient,
+		resources:        make(map[*art.ArtistPublication]*art.ArtResources),
+		signatures:       make(map[*art.ArtResources]string),
 	}
 	return client, nil
 }
@@ -60,10 +62,10 @@ func (client *Client) CloseConnection() {
 }
 
 func (client *Client) Artist() (*art.Artist, error) {
-	if client.publishingArtist == nil {
+	if client.remotePublisherArtist == nil {
 		return nil, ErrArtNotFound
 	}
-	return client.publishingArtist, nil
+	return client.remotePublisherArtist, nil
 }
 
 func (client *Client) Verify(publication *art.ArtistPublication) (*art.ArtResources, error) {
@@ -74,16 +76,21 @@ func (client *Client) Verify(publication *art.ArtistPublication) (*art.ArtResour
 	if publication.Signature != client.signatures[resources] {
 		return nil, fmt.Errorf("signature mismatch")
 	}
-	client.publishingArtist = publication.Artist
+	client.remotePublisherArtist = publication.Artist
 	return resources, nil
 }
 
-func (client *Client) VerifyArtist(artist *art.Artist) error {
-	return fmt.Errorf("VerifyArtist not implemented")
-}
-
 func (client *Client) Sign(resources *art.ArtResources) (*art.ArtistPublication, error) {
-	return nil, fmt.Errorf("Sign not implemented")
+	signature, resourcesWereSigned := client.signatures[resources]
+	if resourcesWereSigned {
+		return &art.ArtistPublication{
+			Artist:                 client.remotePublisherArtist,
+			Signature:              signature,
+			SerializedArtResources: nil,
+		}, nil
+	} else {
+		return nil, fmt.Errorf("Sign not implemented")
+	}
 }
 
 // SyncFromPeer gets art resources (music metadata) from client's peer over tor
@@ -103,22 +110,22 @@ func (client *Client) SyncFromPeer(localStorage ArtServer) (*art.ArtResources, e
 		log.Fatalf(logPrefix+"validatePublication error: %v", err)
 		return nil, err
 	}
-	
+
 	err = client.storeArtResources(publication.Artist, resources, localStorage)
 	if err != nil {
 		log.Fatalf(logPrefix+"importArtReply error: %v", err)
 	}
-	
+
 	return resources, err
 }
 
 // storeArtResources stores art in localStorage with a signature from signer.
-func (client *Client) storeArtResources(publishingArtist *art.Artist, artResources *art.ArtResources, localStorage ArtServer) (err error) {
+func (client *Client) storeArtResources(remotePublisherArtist *art.Artist, artResources *art.ArtResources, localStorage ArtServer) (err error) {
 	const logPrefix = "austk importArtReply "
 	var errors []error
-	client.publishingArtist = publishingArtist
+	client.remotePublisherArtist = remotePublisherArtist
 	for _, artist := range artResources.Artists {
-		_, err = localStorage.StoreArtist(artist, client)
+		err = localStorage.StoreArtist(artist, client)
 		if err != nil {
 			errors = append(errors, err)
 		}
@@ -193,7 +200,7 @@ func (client *Client) DownloadTracks(tracks []*art.Track, localStorage ArtServer
 		}
 		return errors[0] // return the first error
 	}
-	
+
 	return nil
 }
 
@@ -214,21 +221,31 @@ func (client *Client) GetAllArtByTor() (*art.ArtistPublication, error) {
 		log.Printf(logPrefix+"ReadAll response.Body error: %v", err)
 		return nil, err
 	}
-	reply := &art.ArtistPublication{}
-	err = proto.Unmarshal(replyBytes, reply)
+	publication := art.ArtistPublication{}
+	err = proto.Unmarshal(replyBytes, &publication)
 	if err != nil {
 		log.Printf(logPrefix+"Unmarshal reply error: %v", err)
 		return nil, err
 	}
-	
-	return reply, nil
+
+	resources := art.ArtResources{}
+	err = proto.Unmarshal(publication.SerializedArtResources, &resources)
+	if err != nil {
+		log.Printf(logPrefix+"failed to deserialize resources from %v, error: %v", publication, err)
+		return nil, err
+	}
+
+	client.resources[&publication] = &resources
+	client.signatures[&resources] = publication.Signature
+
+	return &publication, nil
 }
 
 // GetTrack gets the mp3 track (the bytes of the mp3 file) artistID/artistTrackID
 // from client's peer by http over tor .
 func (client *Client) GetTrack(artistID string, artistTrackID string) ([]byte, error) {
 	const logPrefix = "client GetTrackByTor "
-	
+
 	trackUrl := fmt.Sprintf("http://%s/art/%s/%s",
 		client.peerAddress, artistID, artistTrackID)
 	log.Printf(logPrefix+"Get %s...", trackUrl)

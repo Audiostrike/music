@@ -167,13 +167,16 @@ func (fileServer *FileServer) publish(resources *art.ArtResources, publisher Pub
 	artPath := fileServer.artPath(publishingArtist)
 	_, err = os.Stat(artPath)
 	if os.IsNotExist(err) {
-		containerDirectory := filepath.Join(fileServer.rootPath, publishingArtist.ArtistId)
-		_ = os.MkdirAll(containerDirectory, 0755)
-		err = ioutil.WriteFile(artPath, publication.SerializedArtResources, 0644)
-		if err != nil {
-			log.Printf(logPrefix+"failed to write resources to %s, error: %v", artPath, err)
-			return err
-		}
+		log.Printf(logPrefix+"publishing %v to %s", resources, artPath)
+	} else {
+		log.Printf(logPrefix+"republishing %v to %s", resources, artPath)
+	}
+	containerDirectory := filepath.Join(fileServer.rootPath, publishingArtist.ArtistId)
+	_ = os.MkdirAll(containerDirectory, 0755)
+	err = ioutil.WriteFile(artPath, publication.SerializedArtResources, 0644)
+	if err != nil {
+		log.Printf(logPrefix+"failed to write resources to %s, error: %v", artPath, err)
+		return err
 	}
 	publishedBytes, err := ioutil.ReadFile(artPath)
 	if err != nil {
@@ -181,7 +184,8 @@ func (fileServer *FileServer) publish(resources *art.ArtResources, publisher Pub
 		return err
 	}
 	if bytes.Compare(publishedBytes, publication.SerializedArtResources) != 0 {
-		log.Fatalf(logPrefix + "mismatched bytes")
+		log.Fatalf(logPrefix+"mismatched bytes, published at %s: %v, serialized: %v",
+			artPath, publishedBytes, publication.SerializedArtResources)
 		return fmt.Errorf("bytes on disk out of sync")
 	}
 
@@ -252,7 +256,7 @@ func (fileServer *FileServer) Albums(artistId string) (map[string]*art.Album, er
 }
 
 // storeArtist saves a file with the given artist's details, albums, tracks, and peers.
-func (fileServer *FileServer) StoreArtist(artist *art.Artist, publisher Publisher) (*art.ArtResources, error) {
+func (fileServer *FileServer) StoreArtist(artist *art.Artist, publisher Publisher) error {
 	const logPrefix = "fileServer storeToFileSystem "
 
 	publishedArtist := fileServer.artists[artist.ArtistId]
@@ -267,7 +271,7 @@ func (fileServer *FileServer) StoreArtist(artist *art.Artist, publisher Publishe
 
 	artists := []*art.Artist{artist}
 	albums := make([]*art.Album, 0)
-	tracks := make([]*art.Track, len(fileServer.tracks))
+	tracks := make([]*art.Track, 0)
 	for _, album := range fileServer.albums[artist.ArtistId] {
 		albums = append(albums, album)
 	}
@@ -287,9 +291,7 @@ func (fileServer *FileServer) StoreArtist(artist *art.Artist, publisher Publishe
 		Peers:   peers,
 	}
 
-	err := fileServer.publish(&resources, publisher)
-
-	return &resources, err
+	return fileServer.publish(&resources, publisher)
 }
 
 func (fileServer *FileServer) Artists() (map[string]*art.Artist, error) {
@@ -334,7 +336,7 @@ func (fileServer *FileServer) StorePeer(peer *art.Peer, publisher Publisher) err
 	log.Printf("FileServer StorePeer artist pubkey %s, peer pubkey %s", artist.Pubkey, peer.Pubkey)
 	if artist.Pubkey == peer.Pubkey {
 		fileServer.peers[peer.Pubkey] = peer
-		_, err := fileServer.StoreArtist(artist, publisher)
+		err := fileServer.StoreArtist(artist, publisher)
 		if err != nil {
 			log.Printf("fileServer StorePeer failed to store artist %s, error: %v",
 				artist.ArtistId, err)
@@ -386,7 +388,7 @@ func (fileServer *FileServer) StoreTrack(track *art.Track, publisher Publisher) 
 	// If we know this track's artist's pubkey, asynchronously record the artist's publication.
 	artist := fileServer.artists[track.ArtistId]
 	if artist != nil && artist.Pubkey != "" {
-		_, err := fileServer.StoreArtist(artist, publisher)
+		err := fileServer.StoreArtist(artist, publisher)
 		if err != nil {
 			log.Printf(logPrefix+"filed to store artist %s, error: %v", artist.ArtistId, err)
 			return err

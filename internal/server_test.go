@@ -65,8 +65,8 @@ func (s *MockArtServer) Peers() (map[string]*art.Peer, error) {
 	return s.peers, nil
 }
 
-func (s *MockArtServer) StoreArtist(artist *art.Artist, publisher Publisher) (*art.ArtResources, error) {
-	return nil, fmt.Errorf("not implemented")
+func (s *MockArtServer) StoreArtist(artist *art.Artist, publisher Publisher) error {
+	return fmt.Errorf("not implemented")
 }
 
 func (s *MockArtServer) StorePeer(peer *art.Peer, publisher Publisher) error {

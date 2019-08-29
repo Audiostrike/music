@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 )
 
-// NewServer creates a new DbServer to save and serve art through an AustkDb database.
+// NewDbServer creates a new DbServer to save and serve art through an AustkDb database.
 func NewDbServer(db *AustkDb, artRootPath string) *DbServer {
 	log.Printf("artDb: %v", db)
 	return &DbServer{db: db, artRootPath: artRootPath}
@@ -19,19 +19,13 @@ type DbServer struct {
 }
 
 // Store and get artist info.
-func (dbServer *DbServer) StoreArtist(artist *art.Artist, publisher Publisher) (*art.ArtResources, error) {
-	err := publisher.VerifyArtist(artist)
+func (dbServer *DbServer) StoreArtist(artist *art.Artist, publisher Publisher) error {
+	err := dbServer.db.PutArtist(artist)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	
-	err = dbServer.db.PutArtist(artist)
-	if err != nil {
-		return nil, err
-	}
-	
-	return &art.ArtResources{
-	}, nil
+	return nil
 }
 
 func (dbServer *DbServer) Artists() (map[string]*art.Artist, error) {

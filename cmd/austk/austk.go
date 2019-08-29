@@ -85,7 +85,11 @@ func main() {
 
 	austkServer, err := injectLnd(cfg, localStorage)
 	if err != nil {
-		log.Fatalf(logPrefix+"Failed to connect to lightning network, error: %v", err)
+		if cfg.AddMp3Filename != "" || cfg.RunAsDaemon {
+			log.Fatalf(logPrefix+"Failed to connect to lightning network, error: %v", err)
+		} else {
+			log.Printf(logPrefix+"failed to  connect to lightning network, error: %v", err)
+		}
 	}
 
 	if cfg.AddMp3Filename != "" {
@@ -217,7 +221,7 @@ func storeMp3File(filename string, localStorage audiostrike.ArtServer, publisher
 		ArtistId: artistID,
 		Name:     artistName,
 	}
-	_, err = localStorage.StoreArtist(artist, publisher)
+	err = localStorage.StoreArtist(artist, publisher)
 	if err != nil {
 		log.Printf(logPrefix+"StoreArtist %v, error: %v", artist, err)
 		return nil, err
@@ -276,9 +280,9 @@ func startServer(cfg *audiostrike.Config, localStorage audiostrike.ArtServer, au
 		return err
 	}
 	artist.Pubkey = pubkey
-	_, err = localStorage.StoreArtist(artist, austkServer)
+	err = localStorage.StoreArtist(artist, austkServer)
 	if err != nil {
-		log.Fatalf(logPrefix+"db.SetPubkeyForArtist %v, error: %v", cfg.ArtistId, err)
+		log.Fatalf(logPrefix+"StoreArtist %v, error: %v", artist, err)
 		return err
 	}
 
