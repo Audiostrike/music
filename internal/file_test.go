@@ -117,7 +117,7 @@ func TestPeers(t *testing.T) {
 
 	err = fileServer.StoreArtist(&mockArtist, &mockPublisher)
 	if err != nil {
-		t.Errorf("StoreArtist failed for %s with pubkey %s, error: %v", testArtistId, mockPubkey, err)
+		t.Errorf("StoreArtist %v failed for publisher %v, error: %v", mockArtist, mockPublisher, err)
 	}
 
 	err = fileServer.StorePeer(&art.Peer{Pubkey: mockPubkey}, &mockPublisher)

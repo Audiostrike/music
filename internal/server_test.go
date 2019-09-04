@@ -43,7 +43,7 @@ func (s *MockArtServer) Artist(artistId string) (*art.Artist, error) {
 	return s.artists[artistId], nil
 }
 
-func (s *MockArtServer) StoreAlbum(album *art.Album) error {
+func (s *MockArtServer) StoreAlbum(album *art.Album, publisher Publisher) error {
 	s.albums[album.ArtistId][album.ArtistAlbumId] = album
 	return nil
 }

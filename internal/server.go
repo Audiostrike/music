@@ -28,7 +28,7 @@ type ArtServer interface {
 	Artist(artistId string) (*art.Artist, error)
 
 	// Album: an artist's optional track container to name and sequence tracks
-	StoreAlbum(album *art.Album) error
+	StoreAlbum(album *art.Album, publisher Publisher) error
 	Albums(artistId string) (map[string]*art.Album, error)
 
 	// Get and store Track info.
@@ -46,13 +46,19 @@ type ArtServer interface {
 
 type Publisher interface {
 	Artist() (*art.Artist, error)
-	Sign(*art.ArtResources) (*art.ArtistPublication, error)
-	Verify(*art.ArtistPublication) (*art.ArtResources, error)
 }
 
-// Artist gets the Artist publishing interface
+// Artist gets the Artist publishing from this server.
 func (server *AustkServer) Artist() (*art.Artist, error) {
-	return server.artServer.Artist(server.config.ArtistId)
+	if server.publishingArtist == nil {
+		publishingArtist, err := server.artServer.Artist(server.config.ArtistID)
+		if err != nil {
+			log.Fatalf("failed to get artist from storage, error: %v", err)
+			return nil, err
+		}
+		server.publishingArtist = publishingArtist
+	}
+	return server.publishingArtist, nil
 }
 
 func (server *AustkServer) Sign(resources *art.ArtResources) (*art.ArtistPublication, error) {
@@ -83,8 +89,35 @@ func (server *AustkServer) Sign(resources *art.ArtResources) (*art.ArtistPublica
 	}, nil
 }
 
-func (server *AustkServer) Verify(*art.ArtistPublication) (*art.ArtResources, error) {
-	return nil, fmt.Errorf("Verify not implemented")
+func (server *AustkServer) Verify(publication *art.ArtistPublication) (*art.ArtResources, error) {
+	const logPrefix = "server Verify "
+
+	ctx := context.Background()
+	verifyMessageInput := lnrpc.VerifyMessageRequest{
+		Msg:       publication.SerializedArtResources,
+		Signature: publication.Signature,
+	}
+	verifyMessageResult, err := server.lightningClient.VerifyMessage(ctx, &verifyMessageInput)
+	if err != nil {
+		log.Printf(logPrefix+"VerifyMessage error: %v", err)
+		//w.WriteHeader(http.StatusInternalServerError)
+		return nil, err
+	}
+	if !verifyMessageResult.Valid {
+		log.Printf(logPrefix+"signature %s is not validly signed by artist %v for message %v",
+			publication.Signature, publication.Artist, publication.SerializedArtResources)
+		return nil, ErrInvalidSignature
+	}
+	if verifyMessageResult.Pubkey != publication.Artist.Pubkey {
+		log.Printf(logPrefix+"expected pubkey %s but signature %s has pubkey %s",
+			publication.Artist.Pubkey, publication.Signature, verifyMessageResult.Pubkey)
+		return nil, ErrInvalidSignature
+	}
+
+	resources := art.ArtResources{}
+	err = proto.Unmarshal(publication.SerializedArtResources, &resources)
+
+	return &resources, err
 }
 
 func (server *AustkServer) VerifyArtist(artist *art.Artist) error {
@@ -96,8 +129,9 @@ func (server *AustkServer) VerifyArtist(artist *art.Artist) error {
 }
 
 var (
-	ErrArtNotFound  = errors.New("ArtServer has no such art")
-	ErrPeerNotFound = errors.New("AustkServer has no such peer")
+	ErrArtNotFound      = errors.New("ArtServer has no such art")
+	ErrInvalidSignature = errors.New("Signature is not valid for the artist pubkey and message")
+	ErrPeerNotFound     = errors.New("AustkServer has no such peer")
 )
 
 // Server hosts the configured artist's art for http/tor clients who might pay the lnd node.
@@ -112,7 +146,7 @@ type AustkServer struct {
 
 // NewAustkServer creates a new network Server to serve the configured artist's art.
 func NewAustkServer(cfg *Config, artServer ArtServer, lightningClient lnrpc.LightningClient) (*AustkServer, error) {
-	const logPrefix = "server NewServer "
+	const logPrefix = "server NewAustkServer "
 
 	// Test lightningClient to ensure that we can sign messages with it.
 	ctx := context.Background()
@@ -124,15 +158,35 @@ func NewAustkServer(cfg *Config, artServer ArtServer, lightningClient lnrpc.Ligh
 		return nil, err
 	}
 
-	return &AustkServer{
-		artServer:       artServer,
-		config:          cfg,
-		httpServer:      &http.Server{Addr: "localhost"},
-		lightningClient: lightningClient,
-		quitChannel:     make(chan bool),
-	}, nil
+	log.Printf(logPrefix+"configured artist: %s", cfg.ArtistID)
+	publishingArtist, err := artServer.Artist(cfg.ArtistID)
+	server := &AustkServer{
+		artServer:        artServer,
+		config:           cfg,
+		httpServer:       &http.Server{Addr: "localhost"},
+		lightningClient:  lightningClient,
+		publishingArtist: publishingArtist,
+		quitChannel:      make(chan bool),
+	}
+	if err == ErrArtNotFound {
+		publishingArtist := &art.Artist{ArtistId: cfg.ArtistID}
+		server.publishingArtist = publishingArtist
+		err = artServer.StoreArtist(publishingArtist, server)
+		if err != nil {
+			log.Fatalf(logPrefix+"failed to store skeletal artist %s, error: %v",
+				publishingArtist, err)
+			return nil, err
+		}
+		log.Printf(logPrefix+"stored %v", publishingArtist)
+	} else if err != nil {
+		log.Printf(logPrefix+"Failed to retrieve configured artist %s, error: %v",
+			cfg.ArtistID, err)
+	}
+
+	return server, nil
 }
 
+// TODO: move this?
 func NewLightningClient(cfg *Config) (lnrpc.LightningClient, error) {
 	const logPrefix = "server NewLightningClient "
 
@@ -268,12 +322,6 @@ func (server *AustkServer) getAllArtHandler(w http.ResponseWriter, req *http.Req
 	// preferred bit rate, or other conditions TBD.
 	// Maybe read any follow-back peer URL as well.
 
-	log.Printf(logPrefix+"configured artist: %s", server.config.ArtistId)
-	publishingArtist, err := server.artServer.Artist(server.config.ArtistId)
-	if err != nil {
-		log.Printf(logPrefix+"Failed to retrieve configured artist %s, error: %v", server.config.ArtistId, err)
-	}
-
 	artists, err := server.artServer.Artists()
 	if err != nil {
 		log.Printf(logPrefix+"SelectAllArtists error: %v", err)
@@ -334,7 +382,7 @@ func (server *AustkServer) getAllArtHandler(w http.ResponseWriter, req *http.Req
 	log.Printf(logPrefix+"Signed message %v, signature: %v", resources, publicationSignature)
 
 	publication := art.ArtistPublication{
-		Artist:                 publishingArtist,
+		Artist:                 server.publishingArtist,
 		Signature:              publicationSignature,
 		SerializedArtResources: marshaledResources,
 	}

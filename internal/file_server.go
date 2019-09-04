@@ -118,60 +118,17 @@ func (fileServer *FileServer) readArtFile(path string, fileInfo os.FileInfo, err
 	return nil
 }
 
-// store saves a file with the given artist's details, albums, tracks, and peers.
-func (fileServer *FileServer) storeAllArtists() (*art.ArtResources, error) {
-	const logPrefix = "fileServer storeAllArtists "
+func (fileServer *FileServer) savePublishedResources(publication *art.ArtistPublication, resources *art.ArtResources) error {
+	const logPrefix = "FileServer savePublishedResources "
 
-	artists := make([]*art.Artist, 0, len(fileServer.artists))
-	albums := make([]*art.Album, 0)
-	tracks := make([]*art.Track, len(fileServer.tracks))
-	for _, artist := range fileServer.artists {
-		artists = append(artists, artist)
-		for _, album := range fileServer.albums[artist.ArtistId] {
-			albums = append(albums, album)
-		}
-		for _, track := range fileServer.tracks[artist.ArtistId] {
-			tracks = append(tracks, track)
-		}
-	}
-
-	peers := make([]*art.Peer, 0, len(fileServer.peers))
-	for _, peer := range fileServer.peers {
-		peers = append(peers, peer)
-	}
-
-	resources := art.ArtResources{
-		Artists: artists,
-		Albums:  albums,
-		Tracks:  tracks,
-		Peers:   peers,
-	}
-	return &resources, fmt.Errorf(logPrefix + "not implemented")
-}
-
-func (fileServer *FileServer) publish(resources *art.ArtResources, publisher Publisher) error {
-	const logPrefix = "FileServer publish "
-
-	publishingArtist, err := publisher.Artist()
-	if err != nil {
-		log.Fatalf(logPrefix+"fail to publish %v without an artist, error: %v", resources, err)
-		return err
-	}
-
-	publication, err := publisher.Sign(resources)
-	if err != nil {
-		log.Printf(logPrefix+"failed to sign resources %v, error: %v", resources, err)
-		return err
-	}
-
-	artPath := fileServer.artPath(publishingArtist)
-	_, err = os.Stat(artPath)
+	artPath := fileServer.artPath(publication.Artist)
+	_, err := os.Stat(artPath)
 	if os.IsNotExist(err) {
 		log.Printf(logPrefix+"publishing %v to %s", resources, artPath)
 	} else {
 		log.Printf(logPrefix+"republishing %v to %s", resources, artPath)
 	}
-	containerDirectory := filepath.Join(fileServer.rootPath, publishingArtist.ArtistId)
+	containerDirectory := filepath.Join(fileServer.rootPath, publication.Artist.ArtistId)
 	_ = os.MkdirAll(containerDirectory, 0755)
 	err = ioutil.WriteFile(artPath, publication.SerializedArtResources, 0644)
 	if err != nil {
@@ -195,7 +152,7 @@ func (fileServer *FileServer) publish(resources *art.ArtResources, publisher Pub
 		return err
 	}
 
-	pubPath := fileServer.publicationPath(publishingArtist)
+	pubPath := fileServer.publicationPath(publication.Artist)
 	err = ioutil.WriteFile(pubPath, marshaledPublication, 0644)
 	if err != nil {
 		log.Printf(logPrefix+"failed to write publication to %s, error: %v", pubPath, err)
@@ -241,59 +198,6 @@ func (fileServer *FileServer) readPeerFile(artDirPath string, pubkey string) err
 	return err
 }
 
-func (fileServer *FileServer) StoreAlbum(album *art.Album) error {
-	return fmt.Errorf("not implemented")
-}
-
-func (fileServer *FileServer) Albums(artistId string) (map[string]*art.Album, error) {
-	albums, found := fileServer.albums[artistId]
-	if !found {
-		// Read album info from file system.
-		fmt.Errorf("not implemented")
-	}
-
-	return albums, nil
-}
-
-// storeArtist saves a file with the given artist's details, albums, tracks, and peers.
-func (fileServer *FileServer) StoreArtist(artist *art.Artist, publisher Publisher) error {
-	const logPrefix = "fileServer storeToFileSystem "
-
-	publishedArtist := fileServer.artists[artist.ArtistId]
-	if publishedArtist != nil &&
-		publishedArtist.Pubkey != artist.Pubkey &&
-		publishedArtist.Pubkey != "" {
-		log.Printf(logPrefix+"update pubkey for %s from %s to %s",
-			artist.ArtistId, publishedArtist.Pubkey, artist.Pubkey)
-		// TODO: validate that it's safe to replace
-	}
-	fileServer.artists[artist.ArtistId] = artist
-
-	artists := []*art.Artist{artist}
-	albums := make([]*art.Album, 0)
-	tracks := make([]*art.Track, 0)
-	for _, album := range fileServer.albums[artist.ArtistId] {
-		albums = append(albums, album)
-	}
-	for _, track := range fileServer.tracks[artist.ArtistId] {
-		tracks = append(tracks, track)
-	}
-
-	peers := make([]*art.Peer, 0, len(fileServer.peers))
-	for _, peer := range fileServer.peers {
-		peers = append(peers, peer)
-	}
-
-	resources := art.ArtResources{
-		Artists: artists,
-		Albums:  albums,
-		Tracks:  tracks,
-		Peers:   peers,
-	}
-
-	return fileServer.publish(&resources, publisher)
-}
-
 func (fileServer *FileServer) Artists() (map[string]*art.Artist, error) {
 	return fileServer.artists, nil
 }
@@ -304,6 +208,16 @@ func (fileServer *FileServer) Artist(artistID string) (*art.Artist, error) {
 		return nil, ErrArtNotFound
 	}
 	return artist, nil
+}
+
+func (fileServer *FileServer) Albums(artistId string) (map[string]*art.Album, error) {
+	albums, found := fileServer.albums[artistId]
+	if !found {
+		// Read album info from file system.
+		fmt.Errorf("not implemented")
+	}
+
+	return albums, nil
 }
 
 func (fileServer *FileServer) Tracks(artistID string) (map[string]*art.Track, error) {
@@ -322,30 +236,154 @@ func (fileServer *FileServer) AlbumTracks(artistID string, albumID string) (map[
 	return tracksForArtistAlbum, nil
 }
 
-// StorePeer stores the peer in the in-memory database
-// and saves it to the publisher's artist directory file system.
-func (fileServer *FileServer) StorePeer(peer *art.Peer, publisher Publisher) error {
-	const logPrefix = "FileServer StorePeer "
+// StorePublication saves a file with the published artist details, albums, tracks, and peers.
+func (fileServer *FileServer) StorePublication(publication *art.ArtistPublication) error {
+	const logPrefix = "fileServer storeToFileSystem "
 
-	artist, err := publisher.Artist()
+	artistId := publication.Artist.ArtistId
+	previouslyPublishedArtist := fileServer.artists[artistId]
+	if previouslyPublishedArtist != nil &&
+		previouslyPublishedArtist.Pubkey != publication.Artist.Pubkey &&
+		previouslyPublishedArtist.Pubkey != "" {
+		log.Printf(logPrefix+"update pubkey for /%s from %s to %s",
+			artistId, previouslyPublishedArtist.Pubkey, publication.Artist.Pubkey)
+		// TODO: validate that it's safe to replace
+	}
+	fileServer.artists[artistId] = publication.Artist
+
+	// Read the resources from the publication.
+	publishedResources := art.ArtResources{}
+	err := proto.Unmarshal(publication.SerializedArtResources, &publishedResources)
+	if err != nil {
+		log.Fatalf(logPrefix+"failed to deserialized publication %v, error: %v", publication, err)
+		return err
+	}
+
+	err = fileServer.savePublishedResources(publication, &publishedResources)
+
+	// index the published resources for fast access
+	for _, artist := range publishedResources.Artists {
+		previouslyStoredArtist := fileServer.artists[artist.ArtistId]
+		if previouslyStoredArtist != nil {
+			log.Printf(logPrefix+"replacing artist %s details %v with %v",
+				artist.ArtistId, previouslyStoredArtist, artist)
+		}
+		fileServer.artists[artist.ArtistId] = artist
+	}
+	for _, album := range publishedResources.Albums {
+		artistAlbums := fileServer.albums[album.ArtistId]
+		if artistAlbums == nil {
+			artistAlbums := make(map[string]*art.Album)
+			fileServer.albums[album.ArtistId] = artistAlbums
+		}
+		artistAlbums[album.ArtistAlbumId] = album
+	}
+	for _, track := range publishedResources.Tracks {
+		artistTracks := fileServer.tracks[track.ArtistId]
+		if artistTracks == nil {
+			artistTracks := make(map[string]*art.Track)
+			fileServer.tracks[track.ArtistId] = artistTracks
+		}
+		artistTracks[track.ArtistTrackId] = track
+	}
+
+	for _, peer := range publishedResources.Peers {
+		previouslyStoredPeer := fileServer.peers[peer.Pubkey]
+		if previouslyStoredPeer != nil {
+			log.Printf(logPrefix+"replacing peer %s details %v with %v from publication %v",
+				peer.Pubkey, previouslyStoredPeer, peer, publication)
+		}
+		fileServer.peers[peer.Pubkey] = peer
+	}
+
+	return nil
+}
+
+func (fileServer *FileServer) StoreArtist(artist *art.Artist, publisher Publisher) error {
+	const logPrefix = "FileServer StoreArtist "
+
+	publishingArtist, err := publisher.Artist()
+	if err != nil && err != ErrArtNotFound {
+		log.Fatalf(logPrefix+"failed to get Artist for publisher %v, error: %v", publisher, err)
+		return err
+	}
+
+	if publishingArtist == nil {
+		log.Fatalf(logPrefix+"no publising artist")
+	}
+	if artist == nil {
+		log.Fatalf(logPrefix+"no artist")
+	}
+	if publishingArtist.Pubkey != artist.Pubkey {
+		log.Printf(logPrefix+"skip StoreArtist %v because publishing pubkey %v does not match artist pubkey %s, error: %v",
+			artist, publishingArtist.Pubkey, artist.Pubkey, err)
+		return err
+	}
+
+	fileServer.artists[artist.ArtistId] = artist
+	log.Printf(logPrefix+"stored artist %v for publishing artist %v", artist, publishingArtist)
+
+	return nil
+}
+
+func (fileServer *FileServer) StoreAlbum(album *art.Album, publisher Publisher) error {
+	const logPrefix = "FileServer StoreAlbum "
+
+	publishingArtist, err := publisher.Artist()
 	if err != nil {
 		log.Fatalf(logPrefix+"failed to get Artist for publisher %v, error: %v", publisher, err)
 		return err
 	}
 
-	log.Printf("FileServer StorePeer artist pubkey %s, peer pubkey %s", artist.Pubkey, peer.Pubkey)
-	if artist.Pubkey == peer.Pubkey {
-		fileServer.peers[peer.Pubkey] = peer
-		err := fileServer.StoreArtist(artist, publisher)
-		if err != nil {
-			log.Printf("fileServer StorePeer failed to store artist %s, error: %v",
-				artist.ArtistId, err)
-			return err
-		}
-		return nil
+	albumArtist, err := fileServer.Artist(album.ArtistId)
+	if err != nil {
+		log.Fatalf(logPrefix+"failed to get artist %s for album %v, error: %v",
+			album.ArtistId, album, err)
+		return err
 	}
-	log.Printf("FileServer StorePeer should this create an artist record?")
-	return ErrArtNotFound
+
+	if publishingArtist.Pubkey != albumArtist.Pubkey {
+		log.Printf(logPrefix+"skip StoreAlbum %v because publishing pubkey %v does not match album artist pubkey %s, error: %v",
+			album, publishingArtist.Pubkey, albumArtist.Pubkey, err)
+		return err
+	}
+
+	if album.ArtistId == "" || album.ArtistAlbumId == "" {
+		log.Fatalf(logPrefix+"malformed album %v", album)
+	}
+	
+	artistAlbums := fileServer.albums[album.ArtistId]
+	if artistAlbums == nil {
+		artistAlbums = make(map[string]*art.Album)
+		fileServer.albums[album.ArtistId] = artistAlbums
+	}
+
+	artistAlbums[album.ArtistAlbumId] = album
+	log.Printf(logPrefix+"stored album %v for publishing artist %v", album, publishingArtist)
+
+	return nil
+}
+
+// StorePeer stores the peer in the in-memory database
+// and saves it to the publisher's artist directory file system.
+func (fileServer *FileServer) StorePeer(peer *art.Peer, publisher Publisher) error {
+	const logPrefix = "FileServer StorePeer "
+
+	publishingArtist, err := publisher.Artist()
+	if err != nil {
+		log.Fatalf(logPrefix+"failed to get Artist for publisher %v, error: %v", publisher, err)
+		return err
+	}
+
+	log.Printf("FileServer StorePeer %v for publishing artist %v", peer, publishingArtist)
+	if publishingArtist.Pubkey == peer.Pubkey {
+		fileServer.peers[peer.Pubkey] = peer
+	} else {
+		log.Printf(logPrefix+"skip StorePeer %v because pubkey does not match artist %v, error: %v",
+			peer, publishingArtist, err)
+		return err
+	}
+	return nil
 }
 
 func (fileServer *FileServer) Peer(pubkey string) (*art.Peer, error) {
@@ -385,15 +423,6 @@ func (fileServer *FileServer) StoreTrack(track *art.Track, publisher Publisher) 
 		tracksInArtistAlbum[track.AlbumTrackNumber] = track
 	}
 
-	// If we know this track's artist's pubkey, asynchronously record the artist's publication.
-	artist := fileServer.artists[track.ArtistId]
-	if artist != nil && artist.Pubkey != "" {
-		err := fileServer.StoreArtist(artist, publisher)
-		if err != nil {
-			log.Printf(logPrefix+"filed to store artist %s, error: %v", artist.ArtistId, err)
-			return err
-		}
-	}
 	return nil
 }
 

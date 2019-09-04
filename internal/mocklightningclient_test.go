@@ -59,6 +59,9 @@ func (c MockLightningClient) SignMessage(ctx context.Context, in *lnrpc.SignMess
 	return nil, fmt.Errorf("Mock lnd client does not implement SignMessage for input msg: %s (sum: %v)", string(in.Msg), sum)
 }
 func (c MockLightningClient) VerifyMessage(ctx context.Context, in *lnrpc.VerifyMessageRequest, opts ...grpc.CallOption) (*lnrpc.VerifyMessageResponse, error) {
+	if in.Signature == "dh7xh9aw4ce6zhwpczg5qce6xfxkfcyj8cf91j719bgmcks3i7kyhrwiywrhzk5tk7a6d8x3xauppjz6thzzdwbyq8ffzj3p614ko3op" {
+		return &lnrpc.VerifyMessageResponse{Valid:true,Pubkey:"036f709187264df770bd453270a95b579595a42cd89eab2ea437dfd537048a7250"}, nil
+	}
 	return nil, fmt.Errorf("VerifyMessage not implemented")
 }
 func (c MockLightningClient) ConnectPeer(ctx context.Context, in *lnrpc.ConnectPeerRequest, opts ...grpc.CallOption) (*lnrpc.ConnectPeerResponse, error) {

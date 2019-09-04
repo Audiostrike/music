@@ -23,15 +23,20 @@ type Client struct {
 	connectionCtx    context.Context
 	connectionCancel context.CancelFunc
 
-	// remotePublisherArtist, resources, and signatures are local copies of
-	// art resources published by this peer's publishing artist.
-	remotePublisherArtist *art.Artist
-	resources             map[*art.ArtistPublication]*art.ArtResources
-	signatures            map[*art.ArtResources]string
+	// publicationVerifier checks the signature of a publication and extracts its resources.
+	publicationVerifier PublicationVerifier
+	// publisherArtist, verifiedPublications, and resources are art resources this peer published.
+	publishedArtists     map[string]*art.Artist
+	verifiedPublications map[string]*art.ArtistPublication
+	resources            map[string]*art.ArtResources
+}
+
+type PublicationVerifier interface {
+	Verify(*art.ArtistPublication) (*art.ArtResources, error)
 }
 
 // NewClient creates a new austk Client to communicate over torProxy with peerAddress.
-func NewClient(torProxy string, peerAddress string) (*Client, error) {
+func NewClient(torProxy string, peerAddress string, publicationVerifier PublicationVerifier) (*Client, error) {
 	const logPrefix = "client NewClient "
 
 	ctx := context.Background()
@@ -44,13 +49,15 @@ func NewClient(torProxy string, peerAddress string) (*Client, error) {
 	}
 
 	client := &Client{
-		torProxy:         torProxy,
-		peerAddress:      peerAddress,
-		connectionCtx:    connectionCtx,
-		connectionCancel: connectionCancel,
-		torClient:        torClient,
-		resources:        make(map[*art.ArtistPublication]*art.ArtResources),
-		signatures:       make(map[*art.ArtResources]string),
+		torProxy:             torProxy,
+		peerAddress:          peerAddress,
+		connectionCtx:        connectionCtx,
+		connectionCancel:     connectionCancel,
+		torClient:            torClient,
+		publicationVerifier:  publicationVerifier,
+		publishedArtists:     make(map[string]*art.Artist),
+		resources:            make(map[string]*art.ArtResources),
+		verifiedPublications: make(map[string]*art.ArtistPublication),
 	}
 	return client, nil
 }
@@ -62,35 +69,22 @@ func (client *Client) CloseConnection() {
 }
 
 func (client *Client) Artist() (*art.Artist, error) {
-	if client.remotePublisherArtist == nil {
-		return nil, ErrArtNotFound
+	for _, artist := range client.publishedArtists {
+		return artist, nil
 	}
-	return client.remotePublisherArtist, nil
+	return nil, ErrArtNotFound
 }
 
 func (client *Client) Verify(publication *art.ArtistPublication) (*art.ArtResources, error) {
-	resources := client.resources[publication]
+	resources, err := client.publicationVerifier.Verify(publication)
+	if err != nil {
+		return nil, err
+	}
 	if resources == nil {
 		return nil, ErrArtNotFound
 	}
-	if publication.Signature != client.signatures[resources] {
-		return nil, fmt.Errorf("signature mismatch")
-	}
-	client.remotePublisherArtist = publication.Artist
+	client.resources[publication.Artist.Pubkey] = resources
 	return resources, nil
-}
-
-func (client *Client) Sign(resources *art.ArtResources) (*art.ArtistPublication, error) {
-	signature, resourcesWereSigned := client.signatures[resources]
-	if resourcesWereSigned {
-		return &art.ArtistPublication{
-			Artist:                 client.remotePublisherArtist,
-			Signature:              signature,
-			SerializedArtResources: nil,
-		}, nil
-	} else {
-		return nil, fmt.Errorf("Sign not implemented")
-	}
 }
 
 // SyncFromPeer gets art resources (music metadata) from client's peer over tor
@@ -105,13 +99,13 @@ func (client *Client) SyncFromPeer(localStorage ArtServer) (*art.ArtResources, e
 		return nil, err
 	}
 
-	resources, err := client.Verify(publication)
+	resources, err := client.publicationVerifier.Verify(publication)
 	if err != nil {
 		log.Fatalf(logPrefix+"validatePublication error: %v", err)
 		return nil, err
 	}
 
-	err = client.storeArtResources(publication.Artist, resources, localStorage)
+	err = client.storePublication(publication, resources, localStorage)
 	if err != nil {
 		log.Fatalf(logPrefix+"importArtReply error: %v", err)
 	}
@@ -120,10 +114,11 @@ func (client *Client) SyncFromPeer(localStorage ArtServer) (*art.ArtResources, e
 }
 
 // storeArtResources stores art in localStorage with a signature from signer.
-func (client *Client) storeArtResources(remotePublisherArtist *art.Artist, artResources *art.ArtResources, localStorage ArtServer) (err error) {
-	const logPrefix = "austk importArtReply "
-	var errors []error
-	client.remotePublisherArtist = remotePublisherArtist
+func (client *Client) storePublication(publication *art.ArtistPublication, artResources *art.ArtResources, localStorage ArtServer) (err error) {
+	const logPrefix = "client storePublication "
+
+	var errors []error	
+	client.publishedArtists[publication.Artist.Pubkey] = publication.Artist
 	for _, artist := range artResources.Artists {
 		err = localStorage.StoreArtist(artist, client)
 		if err != nil {
@@ -235,8 +230,10 @@ func (client *Client) GetAllArtByTor() (*art.ArtistPublication, error) {
 		return nil, err
 	}
 
-	client.resources[&publication] = &resources
-	client.signatures[&resources] = publication.Signature
+	pubkey := publication.Artist.Pubkey
+	client.publishedArtists[pubkey] = publication.Artist
+	client.resources[pubkey] = &resources
+	client.verifiedPublications[pubkey] = &publication
 
 	return &publication, nil
 }

@@ -68,8 +68,19 @@ func main() {
 		log.Fatalf(logPrefix+"Failed to open database, error: %v", err)
 	}
 
+	austkServer, err := injectLnd(cfg, localStorage)
+	if err != nil {
+		if cfg.AddMp3Filename != "" || cfg.RunAsDaemon {
+			log.Fatalf(logPrefix+"Failed to connect to lightning network, error: %v", err)
+		} else {
+			log.Printf(logPrefix+"failed to connect to lightning network, error: %v", err)
+		}
+	}
+	injectedArtist, _ := austkServer.Artist()
+	log.Printf(logPrefix+"injected lnd into new austk server for artist %v", injectedArtist)
+
 	if cfg.PeerAddress != "" {
-		client, err := audiostrike.NewClient(cfg.TorProxy, cfg.PeerAddress)
+		client, err := audiostrike.NewClient(cfg.TorProxy, cfg.PeerAddress, austkServer)
 		if err != nil {
 			log.Fatalf(logPrefix+"NewClient via torProxy %v to peerAddress %v, error: %v",
 				cfg.TorProxy, cfg.PeerAddress, err)
@@ -81,15 +92,6 @@ func main() {
 		}
 
 		client.CloseConnection()
-	}
-
-	austkServer, err := injectLnd(cfg, localStorage)
-	if err != nil {
-		if cfg.AddMp3Filename != "" || cfg.RunAsDaemon {
-			log.Fatalf(logPrefix+"Failed to connect to lightning network, error: %v", err)
-		} else {
-			log.Printf(logPrefix+"failed to  connect to lightning network, error: %v", err)
-		}
 	}
 
 	if cfg.AddMp3Filename != "" {
@@ -130,7 +132,7 @@ func main() {
 		}
 		log.Printf(logPrefix+"sync from peer %v", peer)
 		peerAddress := fmt.Sprintf("%s:%d", peer.Host, peer.Port)
-		client, err := audiostrike.NewClient(cfg.TorProxy, peerAddress)
+		client, err := audiostrike.NewClient(cfg.TorProxy, peerAddress, austkServer)
 		if err != nil {
 			log.Fatalf(logPrefix+"NewClient via torProxy %v to peerAddress %v, error: %v",
 				cfg.TorProxy, peer.Host, err)
@@ -195,6 +197,25 @@ func storeMp3File(filename string, localStorage audiostrike.ArtServer, publisher
 	artistName := mp3.ArtistName()
 	artistID := nameToId(artistName)
 
+	// Store the artist if not yet known
+	artist, err := localStorage.Artist(artistID)
+	if err != nil && err != audiostrike.ErrArtNotFound {
+		log.Fatalf(logPrefix+"failed to get artist %s, error: %v", artistID, err)
+		return nil, err
+	}
+	if artist == nil {
+		// Store the artist.
+		artist = &art.Artist{
+			ArtistId: artistID,
+			Name:     artistName,
+		}
+		err = localStorage.StoreArtist(artist, publisher)
+		if err != nil {
+			log.Printf(logPrefix+"StoreArtist %v, error: %v", artist, err)
+			return nil, err
+		}
+	}
+
 	var artistTrackID string
 	trackTitle := mp3.Title()
 
@@ -209,23 +230,14 @@ func storeMp3File(filename string, localStorage audiostrike.ArtServer, publisher
 			ArtistId:      artistID,
 			ArtistAlbumId: artistAlbumID,
 			Title:         albumTitle,
-		})
+		}, publisher)
 		artistTrackID = fmt.Sprintf("%v/%v", artistAlbumID, trackTitleID)
 	} else {
 		artistAlbumID = ""
 		artistTrackID = trackTitleID
 	}
 
-	// Store the artist and the track
-	artist := &art.Artist{
-		ArtistId: artistID,
-		Name:     artistName,
-	}
-	err = localStorage.StoreArtist(artist, publisher)
-	if err != nil {
-		log.Printf(logPrefix+"StoreArtist %v, error: %v", artist, err)
-		return nil, err
-	}
+	// Store the track
 	track := &art.Track{
 		ArtistId:      artistID,
 		ArtistTrackId: artistTrackID,
@@ -273,10 +285,10 @@ func startServer(cfg *audiostrike.Config, localStorage audiostrike.ArtServer, au
 		log.Fatalf(logPrefix+"s.Pubkey error: %v", err)
 		return err
 	}
-	artist, err := localStorage.Artist(cfg.ArtistId)
+	artist, err := localStorage.Artist(cfg.ArtistID)
 	if err != nil {
 		log.Fatalf(logPrefix+"Failed to get artist %s from local storage, error: %v",
-			cfg.ArtistId, err)
+			cfg.ArtistID, err)
 		return err
 	}
 	artist.Pubkey = pubkey

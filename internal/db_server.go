@@ -36,8 +36,9 @@ func (dbServer *DbServer) Artist(artistID string) (*art.Artist, error) {
 	return dbServer.db.SelectArtist(artistID)
 }
 
-// Store and get optional album info.
-func (dbServer *DbServer) StoreAlbum(album *art.Album) error {
+// StoreAlbum adds the given album to the publisher's stored art.
+func (dbServer *DbServer) StoreAlbum(album *art.Album, publisher Publisher) error {
+	// legacy store doesn't verify track with publisher
 	return dbServer.db.PutAlbum(album)
 }
 

@@ -40,7 +40,7 @@ var (
 // These settings are specified in defaults, a config file, or the command line.
 // (Config file not yet implemented)
 type Config struct {
-	ArtistId       string `long:"artist" description:"artist id for publishing tracks"`
+	ArtistID       string `long:"artist" description:"artist id for publishing tracks"`
 	ConfigFilename string `long:"config" description:"config file"`
 	DbName         string `long:"dbname" description:"mysql db name"`
 	DbUser         string `long:"dbuser" description:"mysql db username"`
@@ -129,25 +129,25 @@ func LoadConfig() (*Config, error) {
 
 	// The artist should configure ArtistId by specifying the `artist` flag in austk.config,
 	// or in an alternate config file specified by -config, or by command-line flag `-artist`.
-	if cfg.ArtistId == "" {
+	if cfg.ArtistID == "" {
 		// Artist id is not configured or specified so ask the artist for an id.
 		fmt.Printf(
 			"Please specify your artist id.\n" +
 				"Use your public name/identity spelled in lowercase " +
 				" with no punctuation or spaces (for example, alicetheartist): ")
-		inputArtistId, err := userInputReader.ReadString('\n')
+		inputArtistID, err := userInputReader.ReadString('\n')
 		if err != nil {
 			log.Printf(logPrefix+"Error reading ArtistId from stdin: %v", err)
 			return cfg, err
 		}
-		artistId := strings.Replace(inputArtistId, "\n", "", 1)
-		artistId = strings.ReplaceAll(artistId, " ", "")
+		artistID := strings.Replace(inputArtistID, "\n", "", 1)
+		artistID = strings.ReplaceAll(artistID, " ", "")
 		// TODO: strip other whitespace, punctuation, etc.
-		artistId = strings.ToLower(artistId)
-		if artistId == "" {
+		artistID = strings.ToLower(artistID)
+		if artistID == "" {
 			log.Fatalf(logPrefix + "No artist id. Specify your artist id to publish your music.")
 		}
-		cfg.ArtistId = artistId
+		cfg.ArtistID = artistID
 	}
 
 	return cfg, err
