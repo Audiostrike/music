@@ -41,6 +41,7 @@ var (
 // (Config file not yet implemented)
 type Config struct {
 	ArtistID       string `long:"artist" description:"artist id for publishing tracks"`
+	ArtistName string `long:"name" description:"artist name with proper case, punctuation, spacing, etc."`
 	ConfigFilename string `long:"config" description:"config file"`
 	DbName         string `long:"dbname" description:"mysql db name"`
 	DbUser         string `long:"dbuser" description:"mysql db username"`

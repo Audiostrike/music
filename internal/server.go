@@ -1,9 +1,7 @@
 package audiostrike
 
 import (
-	"context"
 	"fmt"
-	"io/ioutil"
 	"net/http"
 	"os"
 
@@ -11,19 +9,29 @@ import (
 	art "github.com/audiostrike/music/pkg/art"
 	"github.com/golang/protobuf/proto"
 	"github.com/gorilla/mux"
-	"github.com/lightningnetwork/lnd/lnrpc"
-	"github.com/lightningnetwork/lnd/macaroons"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials"
-	"gopkg.in/macaroon.v2"
 	"log"
 )
+
+var (
+	ErrArtNotFound      = errors.New("ArtServer has no such art")
+	ErrInvalidSignature = errors.New("Signature is not valid for the artist pubkey and message")
+	ErrPeerNotFound     = errors.New("AustkServer has no such peer")
+)
+
+// AustkServer hosts publishingArtist's art for http/tor clients who might pay the lightning node for it.
+type AustkServer struct {
+	config      *Config
+	artServer   ArtServer // interface for storing art in a file system, database, or test mock
+	httpServer  *http.Server
+	publisher   Publisher
+	quitChannel chan bool
+}
 
 // ArtServer is a repository to store/serve music and related data for this austk node.
 // Implementations may use a database, file system, test fixture, etc.
 type ArtServer interface {
 	// Get and store artist info.
-	StoreArtist(artist *art.Artist, publisher Publisher) error
+	StoreArtist(artist *art.Artist) error
 	Artists() (map[string]*art.Artist, error)
 	Artist(artistId string) (*art.Artist, error)
 
@@ -46,32 +54,23 @@ type ArtServer interface {
 
 type Publisher interface {
 	Artist() (*art.Artist, error)
+	Pubkey() (pubkey string, err error)
+	Sign(*art.ArtResources) (publication *art.ArtistPublication, err error)
 }
 
 // Artist gets the Artist publishing from this server.
 func (server *AustkServer) Artist() (*art.Artist, error) {
-	if server.publishingArtist == nil {
-		publishingArtist, err := server.artServer.Artist(server.config.ArtistID)
-		if err != nil {
-			log.Fatalf("failed to get artist from storage, error: %v", err)
-			return nil, err
-		}
-		server.publishingArtist = publishingArtist
-	}
-	return server.publishingArtist, nil
+	return server.publisher.Artist()
+}
+
+func (server *AustkServer) Pubkey() (string, error) {
+	return server.publisher.Pubkey()
 }
 
 func (server *AustkServer) Sign(resources *art.ArtResources) (*art.ArtistPublication, error) {
 	const logPrefix = "AustkServer Sign "
 
-	log.Printf(logPrefix+"sign %v", resources)
-	ctx := context.Background()
-	serializedResources, err := proto.Marshal(resources)
-	if err != nil {
-		return nil, err
-	}
-	signMessageInput := lnrpc.SignMessageRequest{Msg: serializedResources}
-	signMessageResponse, err := server.lightningClient.SignMessage(ctx, &signMessageInput)
+	publication, err := server.publisher.Sign(resources)
 	if err != nil {
 		log.Fatalf(logPrefix+"lnd is not operational. SignMessage error: %v", err)
 		return nil, err
@@ -81,154 +80,41 @@ func (server *AustkServer) Sign(resources *art.ArtResources) (*art.ArtistPublica
 		log.Fatalf(logPrefix+"failed to get publishing artist, error: %v", err)
 		return nil, err
 	}
-
-	return &art.ArtistPublication{
-		Artist:                 publishingArtist,
-		Signature:              signMessageResponse.Signature,
-		SerializedArtResources: serializedResources,
-	}, nil
-}
-
-func (server *AustkServer) Verify(publication *art.ArtistPublication) (*art.ArtResources, error) {
-	const logPrefix = "server Verify "
-
-	ctx := context.Background()
-	verifyMessageInput := lnrpc.VerifyMessageRequest{
-		Msg:       publication.SerializedArtResources,
-		Signature: publication.Signature,
+	if publication == nil {
+		log.Fatalf(logPrefix+"No publication to sign resources %v", resources)
+		return nil, ErrArtNotFound
+	} else if publication.Artist == nil {
+		log.Fatalf(logPrefix+"No publication artist to sign resources %v", resources)
+		return nil, ErrArtNotFound
 	}
-	verifyMessageResult, err := server.lightningClient.VerifyMessage(ctx, &verifyMessageInput)
-	if err != nil {
-		log.Printf(logPrefix+"VerifyMessage error: %v", err)
-		//w.WriteHeader(http.StatusInternalServerError)
-		return nil, err
+	if publishingArtist == nil {
+		log.Fatalf(logPrefix + "server has no publishingArtist")
+		return nil, ErrArtNotFound
 	}
-	if !verifyMessageResult.Valid {
-		log.Printf(logPrefix+"signature %s is not validly signed by artist %v for message %v",
-			publication.Signature, publication.Artist, publication.SerializedArtResources)
-		return nil, ErrInvalidSignature
-	}
-	if verifyMessageResult.Pubkey != publication.Artist.Pubkey {
-		log.Printf(logPrefix+"expected pubkey %s but signature %s has pubkey %s",
-			publication.Artist.Pubkey, publication.Signature, verifyMessageResult.Pubkey)
-		return nil, ErrInvalidSignature
+	if publishingArtist.Pubkey != publication.Artist.Pubkey ||
+		publishingArtist.ArtistId != publication.Artist.ArtistId {
+		return nil, fmt.Errorf(
+			"lightning node signed with pubkey %s for artist %s but expected pubkey %s for %s",
+			publication.Artist.Pubkey, publication.Artist.ArtistId,
+			publishingArtist.Pubkey, publishingArtist.ArtistId)
 	}
 
-	resources := art.ArtResources{}
-	err = proto.Unmarshal(publication.SerializedArtResources, &resources)
-
-	return &resources, err
-}
-
-func (server *AustkServer) VerifyArtist(artist *art.Artist) error {
-	if proto.Equal(artist, server.publishingArtist) {
-		return nil
-	} else {
-		return ErrArtNotFound
-	}
-}
-
-var (
-	ErrArtNotFound      = errors.New("ArtServer has no such art")
-	ErrInvalidSignature = errors.New("Signature is not valid for the artist pubkey and message")
-	ErrPeerNotFound     = errors.New("AustkServer has no such peer")
-)
-
-// Server hosts the configured artist's art for http/tor clients who might pay the lnd node.
-type AustkServer struct {
-	publishingArtist *art.Artist
-	config           *Config
-	artServer        ArtServer // interface for storing art in a file system, database, or test mock
-	httpServer       *http.Server
-	lightningClient  lnrpc.LightningClient
-	quitChannel      chan bool
+	return publication, nil
 }
 
 // NewAustkServer creates a new network Server to serve the configured artist's art.
-func NewAustkServer(cfg *Config, artServer ArtServer, lightningClient lnrpc.LightningClient) (*AustkServer, error) {
+func NewAustkServer(cfg *Config, localStorage ArtServer, publisher Publisher) (*AustkServer, error) {
 	const logPrefix = "server NewAustkServer "
 
-	// Test lightningClient to ensure that we can sign messages with it.
-	ctx := context.Background()
-	var signMessageInput lnrpc.SignMessageRequest
-	signMessageInput.Msg = []byte("Test message to ensure lnd is operational")
-	_, err := lightningClient.SignMessage(ctx, &signMessageInput)
-	if err != nil {
-		log.Fatalf(logPrefix+"lnd is not operational. SignMessage error: %v", err)
-		return nil, err
-	}
-
-	log.Printf(logPrefix+"configured artist: %s", cfg.ArtistID)
-	publishingArtist, err := artServer.Artist(cfg.ArtistID)
 	server := &AustkServer{
-		artServer:        artServer,
-		config:           cfg,
-		httpServer:       &http.Server{Addr: "localhost"},
-		lightningClient:  lightningClient,
-		publishingArtist: publishingArtist,
-		quitChannel:      make(chan bool),
-	}
-	if err == ErrArtNotFound {
-		publishingArtist := &art.Artist{ArtistId: cfg.ArtistID}
-		server.publishingArtist = publishingArtist
-		err = artServer.StoreArtist(publishingArtist, server)
-		if err != nil {
-			log.Fatalf(logPrefix+"failed to store skeletal artist %s, error: %v",
-				publishingArtist, err)
-			return nil, err
-		}
-		log.Printf(logPrefix+"stored %v", publishingArtist)
-	} else if err != nil {
-		log.Printf(logPrefix+"Failed to retrieve configured artist %s, error: %v",
-			cfg.ArtistID, err)
+		artServer:   localStorage,
+		config:      cfg,
+		httpServer:  &http.Server{Addr: "localhost"},
+		publisher:   publisher,
+		quitChannel: make(chan bool),
 	}
 
 	return server, nil
-}
-
-// TODO: move this?
-func NewLightningClient(cfg *Config) (lnrpc.LightningClient, error) {
-	const logPrefix = "server NewLightningClient "
-
-	// Get the TLS credentials for the lnd server.
-	// The second paramater here is serverNameOverride, set to ""
-	// except to override the virtual host name of authority in test requests.
-	lndTlsCreds, err := credentials.NewClientTLSFromFile(cfg.CertFilePath, "")
-	if err != nil {
-		log.Printf(logPrefix+"failed to get tls credentials from %s, error: %v",
-			cfg.CertFilePath, err)
-		return nil, err
-	}
-
-	// Get the macaroon for lnd grpc requests.
-	// This macaroon must should support creating invoices and signing messages.
-	macaroonData, err := ioutil.ReadFile(cfg.MacaroonPath)
-	if err != nil {
-		log.Printf(logPrefix+"ReadFile macaroon %v error %v\n", cfg.MacaroonPath, err)
-		return nil, err
-	}
-	lndMacaroon := &macaroon.Macaroon{}
-	err = lndMacaroon.UnmarshalBinary(macaroonData)
-	if err != nil {
-		log.Printf(logPrefix+"UnmarchalBinary macaroon error: %v\n", err)
-		return nil, err
-	}
-
-	lndOpts := []grpc.DialOption{
-		grpc.WithTransportCredentials(lndTlsCreds),
-		grpc.WithPerRPCCredentials(macaroons.NewMacaroonCredential(lndMacaroon)),
-	}
-
-	lndGrpcEndpoint := fmt.Sprintf("%v:%d", cfg.LndHost, cfg.LndGrpcPort)
-	log.Printf(logPrefix+"Dial lnd grpc at %v...", lndGrpcEndpoint)
-	lndConn, err := grpc.Dial(lndGrpcEndpoint, lndOpts...)
-	if err != nil {
-		log.Printf(logPrefix+"Dial lnd error: %v", err)
-		return nil, err
-	}
-	lndClient := lnrpc.NewLightningClient(lndConn)
-
-	return lndClient, err
 }
 
 // Start the AustkServer listening for REST austk requests for art.
@@ -238,11 +124,12 @@ func (s *AustkServer) Start() error {
 	s.debugPrintInventory()
 
 	// Publish this austk node as the Peer with this server's Pubkey.
-	pubkey, err := s.Pubkey()
+	pubkey, err := s.publisher.Pubkey()
 	if err != nil {
 		log.Printf(logPrefix+"Pubkey retrieval error: %v", err)
 		return err
 	}
+	log.Printf(logPrefix+"start with pubkey %s", pubkey)
 	restHost := s.RestHost()
 	restPort := s.RestPort()
 
@@ -265,7 +152,7 @@ func (s *AustkServer) Start() error {
 			selfPeer.Port = restPort
 		}
 	}
-	err = s.artServer.StorePeer(selfPeer, s)
+	err = s.artServer.StorePeer(selfPeer, s.publisher)
 	if err != nil {
 		log.Printf(logPrefix+"PutPeer %v error: %v", pubkey, err)
 		return err
@@ -363,30 +250,15 @@ func (server *AustkServer) getAllArtHandler(w http.ResponseWriter, req *http.Req
 		Peers:   peerArray,
 	}
 
-	ctx := context.Background()
-	var signMessageInput lnrpc.SignMessageRequest
-	marshaledResources, err := proto.Marshal(&resources)
+	publication, err := server.Sign(&resources)
 	if err != nil {
-		log.Printf(logPrefix+"Marshal %v, error: %v", resources, err)
+		log.Printf(logPrefix+"failed to Sign resources %v, error: %v", resources, err)
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
-	signMessageInput.Msg = marshaledResources
-	signMessageResult, err := server.lightningClient.SignMessage(ctx, &signMessageInput)
-	if err != nil {
-		log.Printf(logPrefix+"SignMessage error: %v", err)
-		w.WriteHeader(http.StatusInternalServerError)
-		return
-	}
-	publicationSignature := signMessageResult.Signature
-	log.Printf(logPrefix+"Signed message %v, signature: %v", resources, publicationSignature)
 
-	publication := art.ArtistPublication{
-		Artist:                 server.publishingArtist,
-		Signature:              publicationSignature,
-		SerializedArtResources: marshaledResources,
-	}
-	responseData, err := proto.Marshal(&publication)
+	log.Printf(logPrefix+"Signed resources %v, publication: %v", resources, publication)
+	responseData, err := proto.Marshal(publication)
 	if err != nil {
 		log.Printf(logPrefix+"Marshal %v, error: %v", publication, err)
 		w.WriteHeader(http.StatusInternalServerError)
@@ -396,8 +268,8 @@ func (server *AustkServer) getAllArtHandler(w http.ResponseWriter, req *http.Req
 	w.Write(responseData)
 }
 
-func ValidatePublication(publication *art.ArtistPublication) (*art.ArtResources, error) {
-	const logPrefix = "server ValidatePublication "
+func read(publication *art.ArtistPublication) (*art.ArtResources, error) {
+	const logPrefix = "server readPublication "
 
 	artResources := art.ArtResources{}
 	err := proto.Unmarshal(publication.SerializedArtResources, &artResources)
@@ -406,20 +278,6 @@ func ValidatePublication(publication *art.ArtistPublication) (*art.ArtResources,
 		return nil, err
 	}
 	return &artResources, nil
-}
-
-// Pubkey returns the pubkey for the lnd server,
-// which clients can use to authenticate publications from this node.
-func (server *AustkServer) Pubkey() (string, error) {
-	ctx := context.Background()
-	getInfoRequest := lnrpc.GetInfoRequest{}
-	getInfoResponse, err := server.lightningClient.GetInfo(ctx, &getInfoRequest)
-	if err != nil {
-		return "", err
-	}
-	pubkey := getInfoResponse.IdentityPubkey
-
-	return pubkey, nil
 }
 
 // RestHost returns the tor address or ip address of this austk node.

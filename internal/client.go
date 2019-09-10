@@ -23,20 +23,16 @@ type Client struct {
 	connectionCtx    context.Context
 	connectionCancel context.CancelFunc
 
-	// publicationVerifier checks the signature of a publication and extracts its resources.
-	publicationVerifier PublicationVerifier
-	// publisherArtist, verifiedPublications, and resources are art resources this peer published.
-	publishedArtists     map[string]*art.Artist
-	verifiedPublications map[string]*art.ArtistPublication
-	resources            map[string]*art.ArtResources
-}
-
-type PublicationVerifier interface {
-	Verify(*art.ArtistPublication) (*art.ArtResources, error)
+	// publisher signs/checks signature of an artist's resources for a publication.
+	publisher Publisher
+	// publishedArtist, publications, and resources are art resources this peer published.
+	publishedArtists map[string]*art.Artist
+	publications     map[string]*art.ArtistPublication
+	resources        map[string]*art.ArtResources
 }
 
 // NewClient creates a new austk Client to communicate over torProxy with peerAddress.
-func NewClient(torProxy string, peerAddress string, publicationVerifier PublicationVerifier) (*Client, error) {
+func NewClient(torProxy string, peerAddress string, publisher Publisher) (*Client, error) {
 	const logPrefix = "client NewClient "
 
 	ctx := context.Background()
@@ -49,15 +45,15 @@ func NewClient(torProxy string, peerAddress string, publicationVerifier Publicat
 	}
 
 	client := &Client{
-		torProxy:             torProxy,
-		peerAddress:          peerAddress,
-		connectionCtx:        connectionCtx,
-		connectionCancel:     connectionCancel,
-		torClient:            torClient,
-		publicationVerifier:  publicationVerifier,
-		publishedArtists:     make(map[string]*art.Artist),
-		resources:            make(map[string]*art.ArtResources),
-		verifiedPublications: make(map[string]*art.ArtistPublication),
+		torProxy:         torProxy,
+		peerAddress:      peerAddress,
+		connectionCtx:    connectionCtx,
+		connectionCancel: connectionCancel,
+		torClient:        torClient,
+		publisher:        publisher,
+		publishedArtists: make(map[string]*art.Artist),
+		publications:     make(map[string]*art.ArtistPublication),
+		resources:        make(map[string]*art.ArtResources),
 	}
 	return client, nil
 }
@@ -68,15 +64,8 @@ func (client *Client) CloseConnection() {
 	client.connectionCancel()
 }
 
-func (client *Client) Artist() (*art.Artist, error) {
-	for _, artist := range client.publishedArtists {
-		return artist, nil
-	}
-	return nil, ErrArtNotFound
-}
-
-func (client *Client) Verify(publication *art.ArtistPublication) (*art.ArtResources, error) {
-	resources, err := client.publicationVerifier.Verify(publication)
+func (client *Client) Read(publication *art.ArtistPublication) (*art.ArtResources, error) {
+	resources, err := read(publication)
 	if err != nil {
 		return nil, err
 	}
@@ -99,7 +88,7 @@ func (client *Client) SyncFromPeer(localStorage ArtServer) (*art.ArtResources, e
 		return nil, err
 	}
 
-	resources, err := client.publicationVerifier.Verify(publication)
+	resources, err := read(publication)
 	if err != nil {
 		log.Fatalf(logPrefix+"validatePublication error: %v", err)
 		return nil, err
@@ -117,24 +106,24 @@ func (client *Client) SyncFromPeer(localStorage ArtServer) (*art.ArtResources, e
 func (client *Client) storePublication(publication *art.ArtistPublication, artResources *art.ArtResources, localStorage ArtServer) (err error) {
 	const logPrefix = "client storePublication "
 
-	var errors []error	
+	var errors []error
 	client.publishedArtists[publication.Artist.Pubkey] = publication.Artist
 	for _, artist := range artResources.Artists {
-		err = localStorage.StoreArtist(artist, client)
+		err = localStorage.StoreArtist(artist)
 		if err != nil {
 			errors = append(errors, err)
 		}
 	}
 
 	for _, track := range artResources.Tracks {
-		err = localStorage.StoreTrack(track, client)
+		err = localStorage.StoreTrack(track, client.publisher)
 		if err != nil {
 			errors = append(errors, err)
 		}
 	}
 
 	for _, peer := range artResources.Peers {
-		err = localStorage.StorePeer(peer, client)
+		err = localStorage.StorePeer(peer, client.publisher)
 		if err != nil {
 			errors = append(errors, err)
 		}
@@ -233,7 +222,7 @@ func (client *Client) GetAllArtByTor() (*art.ArtistPublication, error) {
 	pubkey := publication.Artist.Pubkey
 	client.publishedArtists[pubkey] = publication.Artist
 	client.resources[pubkey] = &resources
-	client.verifiedPublications[pubkey] = &publication
+	client.publications[pubkey] = &publication
 
 	return &publication, nil
 }

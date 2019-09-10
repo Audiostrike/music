@@ -18,6 +18,7 @@ const (
 )
 
 var cfg *Config = &Config{
+	ArtistID:     "alicetheartist",
 	ArtDir:       "testart",
 	CertFilePath: "tls.cert",
 	MacaroonPath: "test.macaroon",
@@ -65,7 +66,7 @@ func (s *MockArtServer) Peers() (map[string]*art.Peer, error) {
 	return s.peers, nil
 }
 
-func (s *MockArtServer) StoreArtist(artist *art.Artist, publisher Publisher) error {
+func (s *MockArtServer) StoreArtist(artist *art.Artist) error {
 	return fmt.Errorf("not implemented")
 }
 
@@ -129,7 +130,11 @@ var mockArtServer MockArtServer = MockArtServer{
 
 // TestGetAllArt tests that AustkServer's getAllArtHandler returns art from the given ArtServer.
 func TestGetAllArt(t *testing.T) {
-	austkServer, err := NewAustkServer(cfg, &mockArtServer, &mockLightningClient)
+	mockLightningNode, err := NewLightningNode(cfg, &mockArtServer)
+	if err != nil {
+		t.Errorf("Failed to instantiate lightning node, error: %v", err)
+	}
+	austkServer, err := NewAustkServer(cfg, &mockArtServer, mockLightningNode)
 	if err != nil {
 		t.Errorf("Failed to connect to music DB, error %v", err)
 	}
@@ -190,7 +195,11 @@ func TestGetAllArt(t *testing.T) {
 
 // TestGetArt
 func TestGetArt(t *testing.T) {
-	austkServer, err := NewAustkServer(cfg, &mockArtServer, mockLightningClient)
+	mockLightningNode, err := NewLightningNode(cfg, &mockArtServer)
+	if err != nil {
+		t.Errorf("Failed to instantiate lightning node, error: %v", err)
+	}
+	austkServer, err := NewAustkServer(cfg, &mockArtServer, mockLightningNode)
 	if err != nil {
 		t.Errorf("Failed to connect to music DB, error %v", err)
 	}
@@ -224,12 +233,17 @@ func TestGetArt(t *testing.T) {
 // Verify that the server publishes itself as the Peer with its Pubkey.
 func TestPeersForServerPubkey(t *testing.T) {
 	cfg := &Config{
+		ArtistID:     "alicetheartist",
 		CertFilePath: "tls.cert",
 		MacaroonPath: "test.macaroon",
 		LndHost:      "127.0.0.1",
 		LndGrpcPort:  10009,
 	}
-	austkServer, err := NewAustkServer(cfg, &mockArtServer, mockLightningClient)
+	mockLightningNode, err := NewLightningNode(cfg, &mockArtServer)
+	if err != nil {
+		t.Errorf("failed to instantiate lightning node, error: %v", err)
+	}
+	austkServer, err := NewAustkServer(cfg, &mockArtServer, mockLightningNode)
 	if err != nil {
 		t.Errorf("Failed to connect to music DB, error %v", err)
 	}

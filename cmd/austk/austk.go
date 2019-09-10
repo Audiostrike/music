@@ -68,7 +68,12 @@ func main() {
 		log.Fatalf(logPrefix+"Failed to open database, error: %v", err)
 	}
 
-	austkServer, err := injectLnd(cfg, localStorage)
+	lightning, err := audiostrike.NewLightningNode(cfg, localStorage)
+	if err != nil {
+		log.Fatalf(logPrefix+"Failed to connect with Lightning node, error: %v", err)
+	}
+	
+	austkServer, err := injectPublisher(cfg, localStorage, lightning)
 	if err != nil {
 		if cfg.AddMp3Filename != "" || cfg.RunAsDaemon {
 			log.Fatalf(logPrefix+"Failed to connect to lightning network, error: %v", err)
@@ -209,7 +214,7 @@ func storeMp3File(filename string, localStorage audiostrike.ArtServer, publisher
 			ArtistId: artistID,
 			Name:     artistName,
 		}
-		err = localStorage.StoreArtist(artist, publisher)
+		err = localStorage.StoreArtist(artist)
 		if err != nil {
 			log.Printf(logPrefix+"StoreArtist %v, error: %v", artist, err)
 			return nil, err
@@ -292,7 +297,7 @@ func startServer(cfg *audiostrike.Config, localStorage audiostrike.ArtServer, au
 		return err
 	}
 	artist.Pubkey = pubkey
-	err = localStorage.StoreArtist(artist, austkServer)
+	err = localStorage.StoreArtist(artist)
 	if err != nil {
 		log.Fatalf(logPrefix+"StoreArtist %v, error: %v", artist, err)
 		return err

@@ -19,7 +19,7 @@ type DbServer struct {
 }
 
 // Store and get artist info.
-func (dbServer *DbServer) StoreArtist(artist *art.Artist, publisher Publisher) error {
+func (dbServer *DbServer) StoreArtist(artist *art.Artist) error {
 	err := dbServer.db.PutArtist(artist)
 	if err != nil {
 		return err

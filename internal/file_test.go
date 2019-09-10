@@ -22,6 +22,10 @@ func (s *MockPublisher) Artist() (*art.Artist, error) {
 	return &mockArtist, nil
 }
 
+func (s *MockPublisher) Pubkey() (string, error) {
+	return mockPubkey, nil
+}
+
 func (s *MockPublisher) Sign(resources *art.ArtResources) (*art.ArtistPublication, error) {
 	return &art.ArtistPublication{}, nil
 }
@@ -115,7 +119,7 @@ func TestPeers(t *testing.T) {
 		t.Errorf("NewFileServer(%s), error: %v", rootPath, err)
 	}
 
-	err = fileServer.StoreArtist(&mockArtist, &mockPublisher)
+	err = fileServer.StoreArtist(&mockArtist)
 	if err != nil {
 		t.Errorf("StoreArtist %v failed for publisher %v, error: %v", mockArtist, mockPublisher, err)
 	}

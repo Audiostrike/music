@@ -28,14 +28,21 @@ func injectFileServer(artDirPath string) (audiostrike.ArtServer, error) {
 	return artServer, nil
 }
 
-// Injectors from wire_lnd.go:
+// Injectors from wire_lightning.go:
 
-func injectLnd(cfg *audiostrike.Config, artServer audiostrike.ArtServer) (*audiostrike.AustkServer, error) {
-	lightningClient, err := audiostrike.NewLightningClient(cfg)
+func injectLightningNode(cfg *audiostrike.Config, artServer audiostrike.ArtServer) (audiostrike.Publisher, error) {
+	lightningNode, err := audiostrike.NewLightningNode(cfg, artServer)
 	if err != nil {
 		return nil, err
 	}
-	austkServer, err := audiostrike.NewAustkServer(cfg, artServer, lightningClient)
+	publisher := useLightningNode(lightningNode)
+	return publisher, nil
+}
+
+// Injectors from wire_publisher.go:
+
+func injectPublisher(cfg *audiostrike.Config, artServer audiostrike.ArtServer, publisher audiostrike.Publisher) (*audiostrike.AustkServer, error) {
+	austkServer, err := audiostrike.NewAustkServer(cfg, artServer, publisher)
 	if err != nil {
 		return nil, err
 	}
@@ -52,4 +59,10 @@ func useDbServer(dbServer *audiostrike.DbServer) audiostrike.ArtServer {
 
 func useFileServer(fileServer *audiostrike.FileServer) audiostrike.ArtServer {
 	return fileServer
+}
+
+// wire_lightning.go:
+
+func useLightningNode(lightningNode *audiostrike.LightningNode) audiostrike.Publisher {
+	return lightningNode
 }

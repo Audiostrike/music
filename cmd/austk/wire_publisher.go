@@ -12,7 +12,7 @@ import (
 	"github.com/google/wire"
 )
 
-func injectLnd(cfg *audiostrike.Config, artServer audiostrike.ArtServer) (s *audiostrike.AustkServer, err error) {
-	wire.Build(audiostrike.NewLightningClient, audiostrike.NewAustkServer)
+func injectPublisher(cfg *audiostrike.Config, artServer audiostrike.ArtServer, publisher audiostrike.Publisher) (s *audiostrike.AustkServer, err error) {
+	wire.Build(audiostrike.NewAustkServer)
 	return
 }

@@ -8,7 +8,6 @@ import (
 	"io/ioutil"
 	"log"
 	"os"
-	"path"
 	"path/filepath"
 	"regexp"
 )
@@ -29,6 +28,7 @@ type FileServer struct {
 
 var (
 	artistFileRegex     *regexp.Regexp = regexp.MustCompile("^(?P<root>.*)/(?P<ArtistID>[0-9a-z]+)/(?P<file>.*)")
+	artistArtFileRegex  *regexp.Regexp = regexp.MustCompile("^(?P<root>.*)/(?P<ArtistID>[0-9a-z]+)/[.]art$")
 	artistPubFileRegex  *regexp.Regexp = regexp.MustCompile("^(?P<root>.*)/(?P<ArtistID>[0-9a-z]+)/(?P<Pubkey>[0-9a-f]+)[.]pub$")
 	artistTrackMp3Regex *regexp.Regexp = regexp.MustCompile("^(?P<root>.*)/(?P<ArtistID>[0-9a-z]+)/(?P<ArtistTrackID>[0-9a-z/]+)[.]mp3$")
 )
@@ -46,7 +46,7 @@ func NewFileServer(artDirPath string) (*FileServer, error) {
 		peers:       make(map[string]*art.Peer),
 	}
 
-	err := filepath.Walk(artDirPath, fileServer.readArtFile)
+	err := filepath.Walk(artDirPath, fileServer.readFile)
 	if err != nil {
 		log.Fatalf(logPrefix+"Failed to read art directory, error: %v", err)
 		return nil, err
@@ -54,20 +54,15 @@ func NewFileServer(artDirPath string) (*FileServer, error) {
 	return &fileServer, nil
 }
 
-func (fileServer *FileServer) readArtFile(path string, fileInfo os.FileInfo, err error) error {
-	const logPrefix = "FileServer readArtFile "
+func (fileServer *FileServer) readFile(path string, fileInfo os.FileInfo, err error) error {
+	const logPrefix = "FileServer readFile "
 
 	if path == fileServer.rootPath {
 		return filepath.SkipDir
 	}
 
-	// Read the .art file as art.ArtResources
-	// ArtistTrackID may be simple alphanumeric identifier
-	// or it may optionally include album or other slash-separated hierarchy.
-	// Optionally order tracks and albums with numeric prefixes.
-
-	// All the records to read are associated with an artist.
-	// First identify that artist by the name of the directory
+	// All the files to read are owned by the Artist whose artistID is the file's directory name.
+	// Identify that artistID by the name of the directory.
 	artistFileMatchGroups := artistFileRegex.FindStringSubmatch(path)
 	if len(artistFileMatchGroups) < 4 {
 		log.Printf(logPrefix+"skip non-artist file: %s", path)
@@ -81,29 +76,63 @@ func (fileServer *FileServer) readArtFile(path string, fileInfo os.FileInfo, err
 	}
 	artistID := artistFileMatchGroups[2]
 
-	// Then check wither this is the .pub file with metadata signed by the artist's pubkey.
+	// if this is the [pubkey].pub file
 	pubFileMatchGroups := artistPubFileRegex.FindStringSubmatch(path)
 	if len(pubFileMatchGroups) == 4 {
-		// This is the artist's .pub file.
-		// Read the art records from that file and validate the signature against the pubkey.
+		// This is the artist's [pubkey].pub file. Read the publication into art resources.
 		pubFileArtistID := pubFileMatchGroups[2]
 		if pubFileArtistID != artistID { // sanity check
 			return fmt.Errorf("unexpected ArtistID %s in %s for artist %s",
 				pubFileArtistID, path, artistID)
 		}
 		pubkey := pubFileMatchGroups[3]
-		log.Printf(logPrefix+"pub file %s for artistId: %s, pubkey: %s}",
-			path, artistID, pubkey)
+		log.Printf(logPrefix+"pub file %s for artistId: %s, pubkey: %s}", path, artistID, pubkey)
+
 		publication, err := fileServer.readPublication(artistID, pubkey, path)
 		if err != nil {
 			log.Fatalf("failed to read artist %s publication %s, error: %v", artistID, path, err)
 			return err
 		}
-		artResources, err := ValidatePublication(publication)
-
-		log.Printf("validated publication as art resources: %v", artResources)
+		resources, err := read(publication)
+		if err != nil {
+			log.Printf(logPrefix+"failed to read resources from publication, error: %v", err)
+			return err
+		}
+		err = fileServer.indexResources(resources)
+		if err != nil {
+			log.Printf(logPrefix+"failed to index resources from publication, error: %v", err)
+			return err
+		}
+		
+		log.Printf(logPrefix+"read and index resources from publication at %s", path)
 		return nil
 	}
+
+	// if this is the .art file
+	artFileMatchGroups := artistArtFileRegex.FindStringSubmatch(path)
+	if len(artFileMatchGroups) == 4 {
+		// This is the artist's .art file. Read its art records.
+		artFileArtistID := artFileMatchGroups[2]
+		if artFileArtistID != artistID { // sanity check
+			return fmt.Errorf("unexpected ArtistID %s in %s for artist %s",
+				artFileArtistID, path, artistID)
+		}
+		pubkey := artFileMatchGroups[3]
+		log.Printf(logPrefix+"pub file %s for artistId: %s, pubkey: %s}", path, artistID, pubkey)
+
+		err := fileServer.readArtFile(artistID, path)
+		if err != nil {
+			log.Fatalf("failed to read artist %s resources %s, error: %v", artistID, path, err)
+			return err
+		}
+
+		return nil
+	}
+
+	// Read it as art.ArtResources
+	// ArtistTrackID may be simple alphanumeric identifier
+	// or it may optionally include album or other slash-separated hierarchy.
+	// Optionally order tracks and albums with numeric prefixes.
 
 	// Finally, check whether this is an .mp3 file published by the artist.
 	artistTrackMp3MatchGroups := artistTrackMp3Regex.FindStringSubmatch(path)
@@ -121,6 +150,11 @@ func (fileServer *FileServer) readArtFile(path string, fileInfo os.FileInfo, err
 func (fileServer *FileServer) savePublishedResources(publication *art.ArtistPublication, resources *art.ArtResources) error {
 	const logPrefix = "FileServer savePublishedResources "
 
+	// Ensure that this artist has a directory.
+	artistDirectory := filepath.Join(fileServer.rootPath, publication.Artist.ArtistId)
+	_ = os.MkdirAll(artistDirectory, 0755)
+
+	// Write the publication's serialized resources to the .art file
 	artPath := fileServer.artPath(publication.Artist)
 	_, err := os.Stat(artPath)
 	if os.IsNotExist(err) {
@@ -128,24 +162,26 @@ func (fileServer *FileServer) savePublishedResources(publication *art.ArtistPubl
 	} else {
 		log.Printf(logPrefix+"republishing %v to %s", resources, artPath)
 	}
-	containerDirectory := filepath.Join(fileServer.rootPath, publication.Artist.ArtistId)
-	_ = os.MkdirAll(containerDirectory, 0755)
+
 	err = ioutil.WriteFile(artPath, publication.SerializedArtResources, 0644)
 	if err != nil {
 		log.Printf(logPrefix+"failed to write resources to %s, error: %v", artPath, err)
 		return err
 	}
+
 	publishedBytes, err := ioutil.ReadFile(artPath)
 	if err != nil {
 		log.Printf(logPrefix+"failed to read resources from %s, error: %v", artPath, err)
 		return err
 	}
+	// TODO: Move this verification into a unit test.
 	if bytes.Compare(publishedBytes, publication.SerializedArtResources) != 0 {
 		log.Fatalf(logPrefix+"mismatched bytes, published at %s: %v, serialized: %v",
 			artPath, publishedBytes, publication.SerializedArtResources)
 		return fmt.Errorf("bytes on disk out of sync")
 	}
 
+	// Write the signed publication to the artist's [pubkey].pub file.
 	marshaledPublication, err := proto.Marshal(publication)
 	if err != nil {
 		log.Printf(logPrefix+"failed to marshal %v, error: %v", publication, err)
@@ -158,6 +194,7 @@ func (fileServer *FileServer) savePublishedResources(publication *art.ArtistPubl
 		log.Printf(logPrefix+"failed to write publication to %s, error: %v", pubPath, err)
 		return err
 	}
+
 	return nil
 }
 
@@ -172,30 +209,30 @@ func (fileServer *FileServer) readPublication(artistID string, pubkey string, pu
 
 	publication := art.ArtistPublication{}
 	err = proto.Unmarshal(publishedData, &publication)
-	// TODO: validate that the pubkey was used for the signature or reject this artist pub file
+	if err != nil {
+		log.Printf(logPrefix+"failed to unmarshal publication, error: %v", err)
+		return nil, err
+	}
 
-	// TODO: validate that the publication includes the publishing artist.
-	// for _, artist := range art.Artists {
-	// 	fileServer.artists[artistID] = &artist
-	// }
-	return &publication, nil
+	return &publication, err
 }
 
-func (fileServer *FileServer) readPeerFile(artDirPath string, pubkey string) error {
-	const logPrefix = "FileServer readPeerFile "
+func (fileServer *FileServer) readArtFile(artistID string, artFilePath string) error {
+	const logPrefix = "FileServer readArtFile "
 
-	//pubkeyAtHostColonPortRegex, err := regexp.Compile("^([0-9a-f]{66})@([0-9a-z\\-]+):[0-9]+$")
-	peerFilePath := path.Join(artDirPath, pubkey)
-	peerData, err := ioutil.ReadFile(peerFilePath)
+	artData, err := ioutil.ReadFile(artFilePath)
 	if err != nil {
-		log.Printf(logPrefix+"ReadFile %s error: %v", peerFilePath, err)
+		log.Printf(logPrefix+"ReadFile %s, error: %v", artFilePath, err)
 		return err
 	}
-	peer := art.Peer{}
-	fileServer.peers[pubkey] = &peer
-	//peer := &fileServer.peers[pubkey]
-	err = proto.Unmarshal(peerData, fileServer.peers[pubkey])
-	return err
+
+	resources := art.ArtResources{}
+	err = proto.Unmarshal(artData, &resources)
+	if err != nil {
+		return err
+	}
+
+	return fileServer.indexResources(&resources)
 }
 
 func (fileServer *FileServer) Artists() (map[string]*art.Artist, error) {
@@ -260,9 +297,20 @@ func (fileServer *FileServer) StorePublication(publication *art.ArtistPublicatio
 	}
 
 	err = fileServer.savePublishedResources(publication, &publishedResources)
+	if err != nil {
+		return err
+	}
 
-	// index the published resources for fast access
-	for _, artist := range publishedResources.Artists {
+	err = fileServer.indexResources(&publishedResources)
+
+	return err
+}
+
+// indexResources indexes the resources for fast retrieval
+func (fileServer *FileServer) indexResources(resources *art.ArtResources) error {
+	const logPrefix = "FileServer indexResources "
+
+	for _, artist := range resources.Artists {
 		previouslyStoredArtist := fileServer.artists[artist.ArtistId]
 		if previouslyStoredArtist != nil {
 			log.Printf(logPrefix+"replacing artist %s details %v with %v",
@@ -270,7 +318,7 @@ func (fileServer *FileServer) StorePublication(publication *art.ArtistPublicatio
 		}
 		fileServer.artists[artist.ArtistId] = artist
 	}
-	for _, album := range publishedResources.Albums {
+	for _, album := range resources.Albums {
 		artistAlbums := fileServer.albums[album.ArtistId]
 		if artistAlbums == nil {
 			artistAlbums := make(map[string]*art.Album)
@@ -278,7 +326,7 @@ func (fileServer *FileServer) StorePublication(publication *art.ArtistPublicatio
 		}
 		artistAlbums[album.ArtistAlbumId] = album
 	}
-	for _, track := range publishedResources.Tracks {
+	for _, track := range resources.Tracks {
 		artistTracks := fileServer.tracks[track.ArtistId]
 		if artistTracks == nil {
 			artistTracks := make(map[string]*art.Track)
@@ -287,11 +335,11 @@ func (fileServer *FileServer) StorePublication(publication *art.ArtistPublicatio
 		artistTracks[track.ArtistTrackId] = track
 	}
 
-	for _, peer := range publishedResources.Peers {
+	for _, peer := range resources.Peers {
 		previouslyStoredPeer := fileServer.peers[peer.Pubkey]
 		if previouslyStoredPeer != nil {
-			log.Printf(logPrefix+"replacing peer %s details %v with %v from publication %v",
-				peer.Pubkey, previouslyStoredPeer, peer, publication)
+			log.Printf(logPrefix+"replacing peer %s details %v with %v from resources %v",
+				peer.Pubkey, previouslyStoredPeer, peer, resources)
 		}
 		fileServer.peers[peer.Pubkey] = peer
 	}
@@ -299,29 +347,10 @@ func (fileServer *FileServer) StorePublication(publication *art.ArtistPublicatio
 	return nil
 }
 
-func (fileServer *FileServer) StoreArtist(artist *art.Artist, publisher Publisher) error {
+func (fileServer *FileServer) StoreArtist(artist *art.Artist) error {
 	const logPrefix = "FileServer StoreArtist "
 
-	publishingArtist, err := publisher.Artist()
-	if err != nil && err != ErrArtNotFound {
-		log.Fatalf(logPrefix+"failed to get Artist for publisher %v, error: %v", publisher, err)
-		return err
-	}
-
-	if publishingArtist == nil {
-		log.Fatalf(logPrefix+"no publising artist")
-	}
-	if artist == nil {
-		log.Fatalf(logPrefix+"no artist")
-	}
-	if publishingArtist.Pubkey != artist.Pubkey {
-		log.Printf(logPrefix+"skip StoreArtist %v because publishing pubkey %v does not match artist pubkey %s, error: %v",
-			artist, publishingArtist.Pubkey, artist.Pubkey, err)
-		return err
-	}
-
 	fileServer.artists[artist.ArtistId] = artist
-	log.Printf(logPrefix+"stored artist %v for publishing artist %v", artist, publishingArtist)
 
 	return nil
 }
@@ -351,7 +380,7 @@ func (fileServer *FileServer) StoreAlbum(album *art.Album, publisher Publisher) 
 	if album.ArtistId == "" || album.ArtistAlbumId == "" {
 		log.Fatalf(logPrefix+"malformed album %v", album)
 	}
-	
+
 	artistAlbums := fileServer.albums[album.ArtistId]
 	if artistAlbums == nil {
 		artistAlbums = make(map[string]*art.Album)
