@@ -13,12 +13,12 @@ import (
 )
 
 const (
-	mockArtistId string = "alicetheartist"
-	mockTrackId  string = "testtrack"
+	mockArtistID string = "alicetheartist"
+	mockTrackID  string = "testtrack"
 )
 
 var cfg *Config = &Config{
-	ArtistID:     "alicetheartist",
+	ArtistID:     mockArtistID,
 	ArtDir:       "testart",
 	CertFilePath: "tls.cert",
 	MacaroonPath: "test.macaroon",
@@ -81,11 +81,11 @@ func (s *MockArtServer) StorePeer(peer *art.Peer, publisher Publisher) error {
 	return nil
 }
 
-func (s *MockArtServer) Track(artistId string, trackId string) (*art.Track, error) {
-	if artistId == mockArtistId && trackId == mockTrackId {
+func (s *MockArtServer) Track(artistID string, trackID string) (*art.Track, error) {
+	if artistID == mockArtistID && trackID == mockTrackID {
 		return &art.Track{
-			ArtistId:      mockArtistId,
-			ArtistTrackId: mockTrackId,
+			ArtistId:      mockArtistID,
+			ArtistTrackId: mockTrackID,
 		}, nil
 	} else {
 		return nil, ErrArtNotFound
@@ -110,19 +110,23 @@ func (s *MockArtServer) Tracks(artistId string) (map[string]*art.Track, error) {
 	return s.tracks[artistId], nil
 }
 
+func (s *MockArtServer) StorePublication(publication *art.ArtistPublication) error {
+	return fmt.Errorf("MockArtServer StorePublication not implemented")
+}
+
 var mockArtServer MockArtServer = MockArtServer{
 	artists: map[string]*art.Artist{
-		mockArtistId: &art.Artist{
-			ArtistId: mockArtistId,
+		mockArtistID: &art.Artist{
+			ArtistId: mockArtistID,
 			Pubkey:   mockPubkey,
 		},
 	},
 	peers: map[string]*art.Peer{},
 	tracks: map[string]map[string]*art.Track{
-		mockArtistId: map[string]*art.Track{
-			mockTrackId: &art.Track{
-				ArtistId:      mockArtistId,
-				ArtistTrackId: mockTrackId,
+		mockArtistID: map[string]*art.Track{
+			mockTrackID: &art.Track{
+				ArtistId:      mockArtistID,
+				ArtistTrackId: mockTrackID,
 			},
 		},
 	},
@@ -130,7 +134,7 @@ var mockArtServer MockArtServer = MockArtServer{
 
 // TestGetAllArt tests that AustkServer's getAllArtHandler returns art from the given ArtServer.
 func TestGetAllArt(t *testing.T) {
-	mockLightningNode, err := NewLightningNode(cfg, &mockArtServer)
+	mockLightningNode, err := NewMockLightningNode(cfg, &mockArtServer)
 	if err != nil {
 		t.Errorf("Failed to instantiate lightning node, error: %v", err)
 	}
@@ -178,18 +182,18 @@ func TestGetAllArt(t *testing.T) {
 		t.Errorf("expected artist with mock pubkey %s but got %s in reply: %v",
 			mockPubkey, replyArtist.Pubkey, artResources)
 	}
-	if replyArtist.ArtistId != mockArtistId {
+	if replyArtist.ArtistId != mockArtistID {
 		t.Errorf("expected artist with id %s but got %s in reply: %v",
-			mockArtistId, replyArtist.ArtistId, artResources)
+			mockArtistID, replyArtist.ArtistId, artResources)
 	}
 
 	if len(artResources.Tracks) != 1 {
 		t.Errorf("expected 1 track but got %d in reply: %v", len(artResources.Tracks), artResources)
 	}
 	replyTrack := artResources.Tracks[0]
-	if replyTrack.ArtistId != mockArtistId {
+	if replyTrack.ArtistId != mockArtistID {
 		t.Errorf("expected track with artist id %s but got %s in reply: %v",
-			mockArtistId, replyTrack.ArtistId, artResources)
+			mockArtistID, replyTrack.ArtistId, artResources)
 	}
 }
 
@@ -214,7 +218,7 @@ func TestGetArt(t *testing.T) {
 	defer testHttpServer.Close()
 
 	// Get the reply to verify that austkServer published the expected art.
-	artRequestUrl := fmt.Sprintf("%s/art/%s/%s", testHttpServer.URL, mockArtistId, mockTrackId)
+	artRequestUrl := fmt.Sprintf("%s/art/%s/%s", testHttpServer.URL, mockArtistID, mockTrackID)
 	t.Logf("request url %s", artRequestUrl)
 	response, err := http.Get(artRequestUrl)
 	bytes, err := ioutil.ReadAll(response.Body)
@@ -239,7 +243,7 @@ func TestPeersForServerPubkey(t *testing.T) {
 		LndHost:      "127.0.0.1",
 		LndGrpcPort:  10009,
 	}
-	mockLightningNode, err := NewLightningNode(cfg, &mockArtServer)
+	mockLightningNode, err := NewMockLightningNode(cfg, &mockArtServer)
 	if err != nil {
 		t.Errorf("failed to instantiate lightning node, error: %v", err)
 	}

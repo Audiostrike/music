@@ -65,14 +65,14 @@ func main() {
 
 	localStorage, err := audiostrike.NewFileServer(cfg.ArtDir)
 	if err != nil {
-		log.Fatalf(logPrefix+"Failed to open database, error: %v", err)
+		log.Fatalf(logPrefix+"Failed to open data dir %s, error: %v", cfg.ArtDir, err)
 	}
 
 	lightning, err := audiostrike.NewLightningNode(cfg, localStorage)
 	if err != nil {
 		log.Fatalf(logPrefix+"Failed to connect with Lightning node, error: %v", err)
 	}
-	
+
 	austkServer, err := injectPublisher(cfg, localStorage, lightning)
 	if err != nil {
 		if cfg.AddMp3Filename != "" || cfg.RunAsDaemon {
@@ -149,10 +149,10 @@ func main() {
 			log.Printf(logPrefix+"SyncFromPeer error: %v", err)
 			continue
 		}
-		tracks := resources.Tracks
 
 		if cfg.PlayMp3 {
-			log.Printf("playing tracks...")
+			tracks := resources.Tracks
+			log.Printf("download %d tracks to play...", len(tracks))
 			err = client.DownloadTracks(tracks, localStorage)
 			if err != nil {
 				log.Fatalf(logPrefix+"DownloadTracks error: %v", err)
@@ -268,6 +268,24 @@ func storeMp3File(filename string, localStorage audiostrike.ArtServer, publisher
 		return nil, err
 	}
 
+	resources, err := audiostrike.CollectResources(localStorage)
+	if err != nil {
+		log.Printf(logPrefix+"Failed to collect resources, error: %v", err)
+		return nil, err
+	}
+	
+	publication, err := publisher.Sign(resources)
+	if err != nil {
+		log.Printf(logPrefix+"Failed to sign resources %v, error: %v", resources, err)
+		return nil, err
+	}
+	
+	err = localStorage.StorePublication(publication)
+	if err != nil {
+		log.Printf(logPrefix+"Failed to store publication %v, error: %v", publication, err)
+		return nil, err
+	}
+	
 	return mp3, nil
 }
 

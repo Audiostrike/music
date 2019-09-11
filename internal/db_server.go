@@ -2,6 +2,7 @@ package audiostrike
 
 import (
 	"database/sql"
+	"fmt"
 	art "github.com/audiostrike/music/pkg/art"
 	"log"
 	"path/filepath"
@@ -14,7 +15,7 @@ func NewDbServer(db *AustkDb, artRootPath string) *DbServer {
 }
 
 type DbServer struct {
-	db *AustkDb
+	db          *AustkDb
 	artRootPath string
 }
 
@@ -24,7 +25,7 @@ func (dbServer *DbServer) StoreArtist(artist *art.Artist) error {
 	if err != nil {
 		return err
 	}
-	
+
 	return nil
 }
 
@@ -90,3 +91,6 @@ func (dbServer *DbServer) Peers() (map[string]*art.Peer, error) {
 	return peers, err
 }
 
+func (dbServer *DbServer) StorePublication(publication *art.ArtistPublication) error {
+	return fmt.Errorf("DbServer StorePublication not implemented")
+}

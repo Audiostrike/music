@@ -88,13 +88,7 @@ func (client *Client) SyncFromPeer(localStorage ArtServer) (*art.ArtResources, e
 		return nil, err
 	}
 
-	resources, err := read(publication)
-	if err != nil {
-		log.Fatalf(logPrefix+"validatePublication error: %v", err)
-		return nil, err
-	}
-
-	err = client.storePublication(publication, resources, localStorage)
+	resources, err := client.storePublication(publication, localStorage)
 	if err != nil {
 		log.Fatalf(logPrefix+"importArtReply error: %v", err)
 	}
@@ -103,40 +97,29 @@ func (client *Client) SyncFromPeer(localStorage ArtServer) (*art.ArtResources, e
 }
 
 // storeArtResources stores art in localStorage with a signature from signer.
-func (client *Client) storePublication(publication *art.ArtistPublication, artResources *art.ArtResources, localStorage ArtServer) (err error) {
+func (client *Client) storePublication(publication *art.ArtistPublication, localStorage ArtServer) (*art.ArtResources, error) {
 	const logPrefix = "client storePublication "
 
-	var errors []error
-	client.publishedArtists[publication.Artist.Pubkey] = publication.Artist
-	for _, artist := range artResources.Artists {
-		err = localStorage.StoreArtist(artist)
-		if err != nil {
-			errors = append(errors, err)
-		}
+	pubkey := publication.Artist.Pubkey
+	client.publishedArtists[pubkey] = publication.Artist
+
+	err := localStorage.StorePublication(publication)
+	if err != nil {
+		log.Printf(logPrefix+"failed to store publication %v, error: %v", publication, err)
+		return nil, err
 	}
 
-	for _, track := range artResources.Tracks {
-		err = localStorage.StoreTrack(track, client.publisher)
-		if err != nil {
-			errors = append(errors, err)
-		}
+	// Read the resources from the publication.
+	publishedResources, err := read(publication)
+	if err != nil {
+		log.Fatalf(logPrefix+"failed to read publication %v, error: %v", publication, err)
+		return nil, err
 	}
 
-	for _, peer := range artResources.Peers {
-		err = localStorage.StorePeer(peer, client.publisher)
-		if err != nil {
-			errors = append(errors, err)
-		}
-	}
-
-	if len(errors) > 0 {
-		log.Printf(logPrefix+"%v errors:", len(errors))
-		for _, err = range errors {
-			log.Printf(logPrefix+"\terror: %v", err)
-		}
-		return errors[0] // return the first error.
-	}
-	return nil
+	client.publications[pubkey] = publication
+	client.resources[pubkey] = publishedResources
+	
+	return publishedResources, nil
 }
 
 // DownloadTracks downloads tracks over tor from the peer whose pubkey matches the track artist.

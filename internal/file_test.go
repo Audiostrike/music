@@ -1,18 +1,19 @@
 package audiostrike
 
 import (
+	"github.com/golang/protobuf/proto"
 	"testing"
 
 	art "github.com/audiostrike/music/pkg/art"
+	"log"
 )
 
 const (
 	rootPath     = "testart"
-	testArtistId = "tester"
 )
 
 var mockArtist = art.Artist{
-	ArtistId: testArtistId,
+	ArtistId: mockArtistID,
 	Name:     "Artist McTester",
 	Pubkey:   mockPubkey}
 
@@ -27,7 +28,16 @@ func (s *MockPublisher) Pubkey() (string, error) {
 }
 
 func (s *MockPublisher) Sign(resources *art.ArtResources) (*art.ArtistPublication, error) {
-	return &art.ArtistPublication{}, nil
+	marshaledResources, err := proto.Marshal(resources)
+	if err != nil {
+		log.Printf("Marshal %v, error: %v", resources, err)
+		return nil, err
+	}
+	return &art.ArtistPublication{
+		Artist:                 &mockArtist,
+		Signature:              "mock signature",
+		SerializedArtResources: marshaledResources,
+	}, nil
 }
 
 func (s *MockPublisher) Verify(publication *art.ArtistPublication) (*art.ArtResources, error) {
@@ -35,6 +45,46 @@ func (s *MockPublisher) Verify(publication *art.ArtistPublication) (*art.ArtReso
 }
 
 var mockPublisher MockPublisher
+
+func TestSaveAndLoadFromPub(t *testing.T) {
+	savingFileServer, err := NewFileServer(rootPath)
+	if err != nil {
+		t.Errorf("failed to instantiate file server at %s, error: %v", rootPath, err)
+	}
+
+	mockTrack := art.Track{
+		ArtistId:      mockArtistID,
+		ArtistTrackId: mockTrackID,
+		Title:         "Test Track",
+	}
+	resources := &art.ArtResources{
+		Artists: []*art.Artist{&mockArtist},
+		Tracks:  []*art.Track{&mockTrack},
+	}
+	publication, err := mockPublisher.Sign(resources)
+	if err != nil {
+		t.Errorf("failed to sign resources %v, error: %v", resources, err)
+	}
+
+	err = savingFileServer.StorePublication(publication)
+	if err != nil {
+		t.Errorf("failed to store publication %v, error: %v", publication, err)
+	}
+
+	readingFileServer, err := NewFileServer(rootPath)
+	if err != nil {
+		t.Errorf("failed to instantiate file server at %s, error: %v", rootPath, err)
+	}
+
+	tracks, err := readingFileServer.Tracks(mockArtistID)
+	if err != nil {
+		t.Errorf("failed to get tracks for artist %s from %s, error: %v", mockArtistID, rootPath, err)
+	}
+	if len(tracks) == 0 {
+		t.Errorf("loaded 0 tracks from %s for %s", rootPath, mockArtistID)
+	}
+
+}
 
 func TestTrack(t *testing.T) {
 	fileServer, err := NewFileServer(rootPath)

@@ -50,6 +50,8 @@ type ArtServer interface {
 	StorePeer(peer *art.Peer, publisher Publisher) error
 	Peers() (map[string]*art.Peer, error)
 	Peer(pubkey string) (*art.Peer, error)
+
+	StorePublication(*art.ArtistPublication) error
 }
 
 type Publisher interface {
@@ -136,7 +138,6 @@ func (s *AustkServer) Start() error {
 	selfPeer, err := s.artServer.Peer(pubkey)
 	if err == ErrPeerNotFound {
 		selfPeer = &art.Peer{Pubkey: pubkey, Host: restHost, Port: restPort}
-		log.Printf(logPrefix+"insert selfPeer: %v", selfPeer)
 	} else if err != nil {
 		log.Printf(logPrefix+"artServer.Peer(%v) error: %v", pubkey, err)
 		return err
@@ -209,48 +210,14 @@ func (server *AustkServer) getAllArtHandler(w http.ResponseWriter, req *http.Req
 	// preferred bit rate, or other conditions TBD.
 	// Maybe read any follow-back peer URL as well.
 
-	artists, err := server.artServer.Artists()
+	resources, err := CollectResources(server.artServer)
 	if err != nil {
-		log.Printf(logPrefix+"SelectAllArtists error: %v", err)
+		log.Printf(logPrefix+"collectResources error: %v", err)
 		w.WriteHeader(http.StatusInternalServerError)
 		return
-	}
-	log.Printf(logPrefix+"found %d artists", len(artists))
-	artistArray := make([]*art.Artist, 0, len(artists))
-	trackArray := make([]*art.Track, 0)
-	log.Println(logPrefix + "Select all artists:")
-	for _, artist := range artists {
-		log.Printf("\tArtist: %v", artist)
-		artistArray = append(artistArray, artist)
-		tracks, err := server.artServer.Tracks(artist.ArtistId)
-		if err != nil {
-			log.Printf(logPrefix+"artServer.Tracks error: %v", err)
-			w.WriteHeader(http.StatusInternalServerError)
-			return
-		}
-		for _, track := range tracks {
-			log.Printf("\tTrack: %v", track)
-			trackArray = append(trackArray, track)
-		}
-	}
-	peers, err := server.artServer.Peers()
-	if err != nil {
-		log.Printf(logPrefix+"SelectAllPeers error: %v", err)
-		w.WriteHeader(http.StatusInternalServerError)
-		return
-	}
-	peerArray := make([]*art.Peer, 0, len(peers))
-	for _, peer := range peers {
-		log.Printf("\tPeer: %v", peer)
-		peerArray = append(peerArray, peer)
-	}
-	resources := art.ArtResources{
-		Artists: artistArray,
-		Tracks:  trackArray,
-		Peers:   peerArray,
 	}
 
-	publication, err := server.Sign(&resources)
+	publication, err := server.Sign(resources)
 	if err != nil {
 		log.Printf(logPrefix+"failed to Sign resources %v, error: %v", resources, err)
 		w.WriteHeader(http.StatusInternalServerError)
@@ -266,6 +233,50 @@ func (server *AustkServer) getAllArtHandler(w http.ResponseWriter, req *http.Req
 	}
 	w.WriteHeader(http.StatusOK)
 	w.Write(responseData)
+}
+
+func CollectResources(artServer ArtServer) (*art.ArtResources, error) {
+	const logPrefix="server collectResources "
+	
+	artists, err := artServer.Artists()
+	if err != nil {
+		log.Printf(logPrefix+"SelectAllArtists error: %v", err)
+		return nil, err
+	}
+	log.Printf(logPrefix+"found %d artists", len(artists))
+	artistArray := make([]*art.Artist, 0, len(artists))
+	trackArray := make([]*art.Track, 0)
+	log.Println(logPrefix + "Select all artists:")
+	for _, artist := range artists {
+		log.Printf("\tArtist: %v", artist)
+		artistArray = append(artistArray, artist)
+		tracks, err := artServer.Tracks(artist.ArtistId)
+		if err != nil {
+			log.Printf(logPrefix+"artServer.Tracks error: %v", err)
+			return nil, err
+		}
+		for _, track := range tracks {
+			log.Printf("\tTrack: %v", track)
+			trackArray = append(trackArray, track)
+		}
+	}
+	peers, err := artServer.Peers()
+	if err != nil {
+		log.Printf(logPrefix+"SelectAllPeers error: %v", err)
+		return nil, err
+	}
+	peerArray := make([]*art.Peer, 0, len(peers))
+	for _, peer := range peers {
+		log.Printf("\tPeer: %v", peer)
+		peerArray = append(peerArray, peer)
+	}
+	resources := art.ArtResources{
+		Artists: artistArray,
+		Tracks:  trackArray,
+		Peers:   peerArray,
+	}
+	
+	return &resources, nil
 }
 
 func read(publication *art.ArtistPublication) (*art.ArtResources, error) {
