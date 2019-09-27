@@ -68,8 +68,20 @@ func NewLightningNode(cfg *Config, localStorage ArtServer) (*LightningNode, erro
 	}
 	publishingArtist, err := localStorage.Artist(cfg.ArtistID)
 	if err == ErrArtNotFound {
+		pubkey, err := pubkey(lndClient)
+		if err != nil {
+			log.Fatalf(logPrefix+"failed to get pubkey from lnd %s, error: %v", lndGrpcEndpoint, err)
+			return nil, err
+		}
+		if cfg.Pubkey == "" {
+			cfg.Pubkey = pubkey
+		} else if cfg.Pubkey != pubkey {
+			log.Fatalf(logPrefix+"lnd %s has pubkey %s but artist %v configured pubkey %s",
+				lndGrpcEndpoint, pubkey, publishingArtist, cfg.Pubkey)
+			return nil, fmt.Errorf("misconfigured pubkey")
+		}
 		// The configured artist is not yet stored, so store the artist.
-		publishingArtist = &art.Artist{ArtistId: cfg.ArtistID, Name: cfg.ArtistName}
+		publishingArtist = &art.Artist{ArtistId: cfg.ArtistID, Name: cfg.ArtistName, Pubkey: pubkey}
 		err = localStorage.StoreArtist(publishingArtist)
 		if err != nil {
 			log.Fatalf(logPrefix+"failed to store artist %v, error: %v",
@@ -153,9 +165,13 @@ func (lightningNode *LightningNode) ValidatePublication(publication *art.ArtistP
 // Pubkey returns the pubkey for the lnd server,
 // which clients can use to authenticate publications from this node.
 func (lightningNode *LightningNode) Pubkey() (string, error) {
+	return pubkey(lightningNode.lightningClient)
+}
+
+func pubkey(lightningClient lnrpc.LightningClient) (string, error) {
 	ctx := context.Background()
 	getInfoRequest := lnrpc.GetInfoRequest{}
-	getInfoResponse, err := lightningNode.lightningClient.GetInfo(ctx, &getInfoRequest)
+	getInfoResponse, err := lightningClient.GetInfo(ctx, &getInfoRequest)
 	if err != nil {
 		return "", err
 	}

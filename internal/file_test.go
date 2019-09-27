@@ -9,7 +9,7 @@ import (
 )
 
 const (
-	rootPath     = "testart"
+	rootPath = "testart"
 )
 
 var mockArtist = art.Artist{
@@ -86,7 +86,35 @@ func TestSaveAndLoadFromPub(t *testing.T) {
 
 }
 
-func TestTrack(t *testing.T) {
+// TODO: test that TestNameToID is used for all IDs created from external input.
+
+// TestNameToID verifies that TitleToID converts the given name to lower case, strips white space and punctuation,
+// leaving only a lower-case string of alphabetic characters, numbers, dashes, and periods.
+func TestNameToID(t *testing.T) {
+	name := "Alice the-dash-and.dot.Artist"
+	id := NameToID(name)
+	expected := "alicethe-dash-and.dot.artist"
+	if id != expected {
+		t.Errorf("Failed to normalized name: \"%s\" to expected: %s, actual: %s", name, expected, id)
+	}
+}
+
+// TestTitleToHierarchy verifies that TitleToHierarchy converts the given title to lower case,
+// strips white space and punctuation except for slashes, etc.
+// leaving only a slash-separated series of lower-case strings of alphabetic characters, numbers, dashes, and periods.
+func TestTitleToHierarchy(t *testing.T) {
+	// TODO: use TitleToHierarchy wherever externally specified strings titles are used to create an ArtistAlbumID, ArtistTrackID, etc.
+
+	title := "Test 'Container' / Sub-container \"quoted\" / Item.1"
+	hierarchy := TitleToHierarchy(title)
+	expected := "testcontainer/sub-containerquoted/item.1"
+	if hierarchy != expected {
+		t.Errorf("Failed to normalize title: \"%s\" to expected hierarchy: %s, actual: %s", title, expected, hierarchy)
+	}
+}
+
+// TestStoreTrack verifies that a Track sent to StoreTrack is retrieved by its unique ArtistId and ArtistTrackId.
+func TestStoreTrack(t *testing.T) {
 	fileServer, err := NewFileServer(rootPath)
 	if err != nil {
 		t.Errorf("Failed to instantiate file server on %s, error %v", rootPath, err)

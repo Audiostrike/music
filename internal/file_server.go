@@ -27,14 +27,22 @@ type FileServer struct {
 	albumTracks map[string]map[string]map[uint32]*art.Track
 }
 
+const (
+	hexValueRegex = "[0-9a-f]+"
+	// simpleIDRegex selects a simple lower-case string for use as an ID (ArtistID, etc.), no spaces or punctuation, safe for URLs, file names, etc.
+	simpleIDRegex = "[a-z0-9.-]+"
+	// hierarchyRegex selects a series of one or more simple IDs separated by slashes
+	hierarchyRegex = simpleIDRegex + "(?:/" + simpleIDRegex + ")*"
+)
+
 var (
-	artistDirRegex      *regexp.Regexp = regexp.MustCompile("^/(?P<ArtistID>[0-9a-z]+)$")
-	artistFileRegex     *regexp.Regexp = regexp.MustCompile("^/(?P<ArtistID>[0-9a-z]+)/(?P<file>[0-9a-z./-]*)$")
-	artistArtFileRegex  *regexp.Regexp = regexp.MustCompile("^/(?P<ArtistID>[0-9a-z]+)/[.]art$")
-	artistPubFileRegex  *regexp.Regexp = regexp.MustCompile("^/(?P<ArtistID>[0-9a-z]+)/(?P<Pubkey>[0-9a-f]+)[.]pub$")
-	artistTrackMp3Regex *regexp.Regexp = regexp.MustCompile("^/(?P<ArtistID>[0-9a-z]+)/(?P<ArtistTrackID>[0-9a-z./-]+)[.]mp3$")
-	albumDirRegex       *regexp.Regexp = regexp.MustCompile("^/(?P<ArtistID>[0-9a-z]+)/(?P<album>[0-9a-z./-]+)$")
-	albumFileRegex      *regexp.Regexp = regexp.MustCompile("^/(?P<ArtistID>[0-9a-z]+)/(?P<album>[0-9a-z./-]+)/(?P<file>[0-9a-z./-]+)$")
+	artistDirRegexp      *regexp.Regexp = regexp.MustCompile("^/(?P<ArtistID>" + simpleIDRegex + ")$")
+	artistFileRegexp     *regexp.Regexp = regexp.MustCompile("^/(?P<ArtistID>" + simpleIDRegex + ")/(?P<file>" + hierarchyRegex + ")$")
+	artistArtFileRegexp  *regexp.Regexp = regexp.MustCompile("^/(?P<ArtistID>" + simpleIDRegex + ")/[.]art$")
+	artistPubFileRegexp  *regexp.Regexp = regexp.MustCompile("^/(?P<ArtistID>" + simpleIDRegex + ")/(?P<Pubkey>" + hexValueRegex + ")[.]pub$")
+	artistTrackMp3Regexp *regexp.Regexp = regexp.MustCompile("^/(?P<ArtistID>" + simpleIDRegex + ")/(?P<ArtistTrackID>" + hierarchyRegex + ")[.]mp3$")
+	albumDirRegexp       *regexp.Regexp = regexp.MustCompile("^/(?P<ArtistID>" + simpleIDRegex + ")/(?P<album>" + hierarchyRegex + ")$")
+	albumFileRegexp      *regexp.Regexp = regexp.MustCompile("^/(?P<ArtistID>" + simpleIDRegex + ")/(?P<album>" + hierarchyRegex + ")/(?P<file>" + simpleIDRegex + ")$")
 )
 
 // NewFileServer creates a new FileServer to save and serve art in sudirectories of artDirPath.
@@ -49,6 +57,8 @@ func NewFileServer(artDirPath string) (*FileServer, error) {
 		albumTracks: make(map[string]map[string]map[uint32]*art.Track),
 		peers:       make(map[string]*art.Peer),
 	}
+
+	_ = os.MkdirAll(artDirPath, 0755)
 
 	err := filepath.Walk(artDirPath, fileServer.readFile)
 	if err != nil {
@@ -72,18 +82,18 @@ func (fileServer *FileServer) readFile(prefixedPath string, fileInfo os.FileInfo
 			log.Printf(logPrefix+"processing root path %s", prefixedPath)
 			return nil
 		}
-		artistDirMatchGroups := artistDirRegex.FindStringSubmatch(relativePath)
-		if len(artistDirMatchGroups) == 2 {
+		if artistDirRegexp.MatchString(relativePath) {
+			artistDirMatchGroups := artistDirRegexp.FindStringSubmatch(relativePath)
 			artistID := artistDirMatchGroups[1]
-			log.Printf(logPrefix + "processing artist %s dir %s", artistID, prefixedPath)
+			log.Printf(logPrefix+"processing artist %s dir %s", artistID, prefixedPath)
 			return nil
 		}
 
-		albumDirMatchGroups := albumDirRegex.FindStringSubmatch(relativePath)
-		if len(albumDirMatchGroups) == 3 {
+		if albumDirRegexp.MatchString(relativePath) {
+			albumDirMatchGroups := albumDirRegexp.FindStringSubmatch(relativePath)
 			artistID := albumDirMatchGroups[1]
 			artistAlbumID := albumDirMatchGroups[2]
-			log.Printf(logPrefix + "processing dir %s for artist %s, album %s", prefixedPath, artistID, artistAlbumID)
+			log.Printf(logPrefix+"processing dir %s for artist %s, album %s", prefixedPath, artistID, artistAlbumID)
 			return nil
 		}
 		log.Printf(logPrefix+"unexpected directory %s does not look like an artist or album directory", prefixedPath)
@@ -92,17 +102,17 @@ func (fileServer *FileServer) readFile(prefixedPath string, fileInfo os.FileInfo
 
 	// All the files to read are owned by the Artist whose artistID is the file's directory name.
 	// Identify that artistID by the name of the directory.
-	artistFileMatchGroups := artistFileRegex.FindStringSubmatch(relativePath)
-	if len(artistFileMatchGroups) < 2 {
+	if !artistFileRegexp.MatchString(relativePath) {
 		log.Printf(logPrefix+"skip non-artist file: %s", prefixedPath)
 		return nil
 	}
+	artistFileMatchGroups := artistFileRegexp.FindStringSubmatch(relativePath)
 	artistID := artistFileMatchGroups[1]
 	log.Printf(logPrefix+"reading file %s for artist %s", relativePath, artistID)
 
 	// if this is the [pubkey].pub file
-	pubFileMatchGroups := artistPubFileRegex.FindStringSubmatch(relativePath)
-	if len(pubFileMatchGroups) == 3 {
+	if artistPubFileRegexp.MatchString(relativePath) {
+		pubFileMatchGroups := artistPubFileRegexp.FindStringSubmatch(relativePath)
 		// This is the artist's [pubkey].pub file. Read the publication into art resources.
 		pubFileArtistID := pubFileMatchGroups[1]
 		if pubFileArtistID != artistID { // sanity check
@@ -133,8 +143,8 @@ func (fileServer *FileServer) readFile(prefixedPath string, fileInfo os.FileInfo
 	}
 
 	// if this is the .art file
-	artFileMatchGroups := artistArtFileRegex.FindStringSubmatch(relativePath)
-	if len(artFileMatchGroups) == 2 {
+	if artistArtFileRegexp.MatchString(relativePath) {
+		artFileMatchGroups := artistArtFileRegexp.FindStringSubmatch(relativePath)
 		// This is the artist's .art file. Read its art records.
 		artFileArtistID := artFileMatchGroups[1]
 		if artFileArtistID != artistID { // sanity check
@@ -157,8 +167,8 @@ func (fileServer *FileServer) readFile(prefixedPath string, fileInfo os.FileInfo
 	// Optionally order tracks and albums with numeric prefixes.
 
 	// Finally, check whether this is an .mp3 file published by the artist.
-	artistTrackMp3MatchGroups := artistTrackMp3Regex.FindStringSubmatch(relativePath)
-	if len(artistTrackMp3MatchGroups) == 3 {
+	if artistTrackMp3Regexp.MatchString(relativePath) {
+		artistTrackMp3MatchGroups := artistTrackMp3Regexp.FindStringSubmatch(relativePath)
 		// mp3 file
 		trackID := artistTrackMp3MatchGroups[2]
 		log.Printf(logPrefix+"matched mp3 %s as track ID %s for %s",
@@ -169,6 +179,7 @@ func (fileServer *FileServer) readFile(prefixedPath string, fileInfo os.FileInfo
 	return nil
 }
 
+// savePublishedResources saves an .art file with the given resources and a .pub file with the given publication.
 func (fileServer *FileServer) savePublishedResources(publication *art.ArtistPublication, resources *art.ArtResources) error {
 	const logPrefix = "FileServer savePublishedResources "
 
@@ -190,14 +201,14 @@ func (fileServer *FileServer) savePublishedResources(publication *art.ArtistPubl
 		log.Printf(logPrefix+"failed to write resources to %s, error: %v", artPath, err)
 		return err
 	}
-	log.Printf(logPrefix+"write %v to %s", resources, artPath)
 
+	// TODO: Move this verification into a unit test.
+	// Verify that the .art file saved successfully.
 	publishedBytes, err := ioutil.ReadFile(artPath)
 	if err != nil {
 		log.Printf(logPrefix+"failed to read resources from %s, error: %v", artPath, err)
 		return err
 	}
-	// TODO: Move this verification into a unit test.
 	if bytes.Compare(publishedBytes, publication.SerializedArtResources) != 0 {
 		log.Fatalf(logPrefix+"mismatched bytes, published at %s: %v, serialized: %v",
 			artPath, publishedBytes, publication.SerializedArtResources)
@@ -359,9 +370,16 @@ func (fileServer *FileServer) indexResources(resources *art.ArtResources) error 
 	return nil
 }
 
+// StoreArtist validates the given artist and stores it in memory.
 func (fileServer *FileServer) StoreArtist(artist *art.Artist) error {
 	const logPrefix = "FileServer StoreArtist "
 
+	// validate the artist
+	if artist.Pubkey == "" {
+		log.Printf("FileServer StoreArtist reject artist missing Pubkey: %v", *artist)
+		return fmt.Errorf("Failed to store artist missing Pubkey")
+	}
+	
 	fileServer.artists[artist.ArtistId] = artist
 
 	return nil
@@ -499,6 +517,9 @@ func (fileServer *FileServer) publicationPath(artist *art.Artist) string {
 	// TODO: validate params.
 	if artist.ArtistId == "" {
 		log.Fatalf("FileServer publicationPath failed for missing artist id in %v", artist)
+	}
+	if artist.Pubkey == "" {
+		log.Fatalf("FileServer publicationPath no known pubkey for artist %s", artist.ArtistId)
 	}
 	return filepath.Join(fileServer.rootPath, artist.ArtistId, artist.Pubkey+".pub")
 }

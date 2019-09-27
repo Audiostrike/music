@@ -10,6 +10,8 @@ import (
 	"github.com/golang/protobuf/proto"
 	"github.com/gorilla/mux"
 	"log"
+	"regexp"
+	"strings"
 )
 
 var (
@@ -58,6 +60,23 @@ type Publisher interface {
 	Artist() (*art.Artist, error)
 	Pubkey() (pubkey string, err error)
 	Sign(*art.ArtResources) (publication *art.ArtistPublication, err error)
+}
+
+var invalidIDRegex = regexp.MustCompile("[^a-z0-9.-]")
+
+// NameToId converts the name or title of an artist, album, or track
+// into a case-insensitive id usable for urls, filenames, etc.
+func NameToID(name string) string {
+	lowerCaseName := strings.ToLower(name)
+	// strip whitespace, punctuation, etc. and leave just a lower-case string of letters, numbers, periods, and dashes.
+	return invalidIDRegex.ReplaceAllString(lowerCaseName, "")
+}
+
+var invalidHierarchyRegex = regexp.MustCompile("[^/a-z0-9.-]")
+
+func TitleToHierarchy(title string) string {
+	lowerCaseTitle := strings.ToLower(title)
+	return invalidHierarchyRegex.ReplaceAllString(lowerCaseTitle, "")
 }
 
 // Artist gets the Artist publishing from this server.
@@ -137,6 +156,7 @@ func (s *AustkServer) Start() error {
 
 	selfPeer, err := s.artServer.Peer(pubkey)
 	if err == ErrPeerNotFound {
+		log.Printf(logPrefix+"artServer has no peer with this publisher's pubkey %s", pubkey)
 		selfPeer = &art.Peer{Pubkey: pubkey, Host: restHost, Port: restPort}
 	} else if err != nil {
 		log.Printf(logPrefix+"artServer.Peer(%v) error: %v", pubkey, err)
@@ -236,8 +256,8 @@ func (server *AustkServer) getAllArtHandler(w http.ResponseWriter, req *http.Req
 }
 
 func CollectResources(artServer ArtServer) (*art.ArtResources, error) {
-	const logPrefix="server collectResources "
-	
+	const logPrefix = "server collectResources "
+
 	artists, err := artServer.Artists()
 	if err != nil {
 		log.Printf(logPrefix+"SelectAllArtists error: %v", err)
@@ -275,7 +295,7 @@ func CollectResources(artServer ArtServer) (*art.ArtResources, error) {
 		Tracks:  trackArray,
 		Peers:   peerArray,
 	}
-	
+
 	return &resources, nil
 }
 
