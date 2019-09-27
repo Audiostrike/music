@@ -20,8 +20,8 @@ const (
 var cfg *Config = &Config{
 	ArtistID:     mockArtistID,
 	ArtDir:       "testart",
-	CertFilePath: "tls.cert",
-	MacaroonPath: "test.macaroon",
+	TlsCertPath:  "regtest.tls.cert",
+	MacaroonPath: "regtest.macaroon",
 	LndHost:      "127.0.0.1",
 	LndGrpcPort:  10009,
 }
@@ -236,13 +236,6 @@ func TestGetArt(t *testing.T) {
 
 // Verify that the server publishes itself as the Peer with its Pubkey.
 func TestPeersForServerPubkey(t *testing.T) {
-	cfg := &Config{
-		ArtistID:     "alicetheartist",
-		CertFilePath: "tls.cert",
-		MacaroonPath: "test.macaroon",
-		LndHost:      "127.0.0.1",
-		LndGrpcPort:  10009,
-	}
 	mockLightningNode, err := NewMockLightningNode(cfg, &mockArtServer)
 	if err != nil {
 		t.Errorf("failed to instantiate lightning node, error: %v", err)

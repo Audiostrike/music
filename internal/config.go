@@ -41,7 +41,7 @@ var (
 // (Config file not yet implemented)
 type Config struct {
 	ArtistID       string `long:"artist" description:"artist id for publishing tracks"`
-	ArtistName string `long:"name" description:"artist name with proper case, punctuation, spacing, etc."`
+	ArtistName     string `long:"name" description:"artist name with proper case, punctuation, spacing, etc."`
 	ConfigFilename string `long:"config" description:"config file"`
 	DbName         string `long:"dbname" description:"mysql db name"`
 	DbUser         string `long:"dbuser" description:"mysql db username"`
@@ -54,7 +54,7 @@ type Config struct {
 	RestHost       string `long:"host" description:"ip/tor address for this audiostrike service"`
 	RestPort       int    `long:"port" description:"port where audiostrike protocol is exposed"`
 	ListenOn       string // ip address and port to listen, e.g. 0.0.0.0:53545
-	CertFilePath   string `long:"tlscert" description:"file path for tls cert"`
+	TlsCertPath    string `long:"tlscert" description:"file path for tls cert"`
 	MacaroonPath   string `long:"macaroon" description:"file path for macaroon"`
 	LndHost        string `long:"lndhost" description:"ip/onion address of lnd"`
 	LndGrpcPort    int    `long:"lndport" description:"port where lnd exposes grpc"`

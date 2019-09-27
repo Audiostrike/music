@@ -13,6 +13,7 @@ import (
 	"google.golang.org/grpc/credentials"
 	"gopkg.in/macaroon.v2"
 	"log"
+	"os/user"
 )
 
 type LightningNode struct {
@@ -24,24 +25,21 @@ func NewLightningNode(cfg *Config, localStorage ArtServer) (*LightningNode, erro
 	const logPrefix = "lightningNode NewLightningNode "
 
 	// Get the TLS credentials for the lnd server.
+	tlsCertFilePath, err := tlsCertPath(cfg)
+	if err != nil {
+		log.Fatalf(logPrefix+"failed to get tls cert path, error: %v", err)
+		return nil, err
+	}
 	// The second paramater here is serverNameOverride, set to ""
 	// except to override the virtual host name of authority in test requests.
-	lndTlsCreds, err := credentials.NewClientTLSFromFile(cfg.CertFilePath, "")
+	lndTlsCreds, err := credentials.NewClientTLSFromFile(tlsCertFilePath, "")
 	if err != nil {
-		log.Printf(logPrefix+"failed to get tls credentials from %s, error: %v",
-			cfg.CertFilePath, err)
+		log.Fatalf(logPrefix+"failed to get tls credentials from %s, error: %v",
+			tlsCertFilePath, err)
 		return nil, err
 	}
 
-	// Get the macaroon for lnd grpc requests.
-	// This macaroon must should support creating invoices and signing messages.
-	macaroonData, err := ioutil.ReadFile(cfg.MacaroonPath)
-	if err != nil {
-		log.Printf(logPrefix+"ReadFile macaroon %v error %v\n", cfg.MacaroonPath, err)
-		return nil, err
-	}
-	lndMacaroon := &macaroon.Macaroon{}
-	err = lndMacaroon.UnmarshalBinary(macaroonData)
+	lndMacaroon, err := macaroonFromFile(cfg)
 	if err != nil {
 		log.Printf(logPrefix+"UnmarchalBinary macaroon error: %v\n", err)
 		return nil, err
@@ -178,4 +176,66 @@ func pubkey(lightningClient lnrpc.LightningClient) (string, error) {
 	pubkey := getInfoResponse.IdentityPubkey
 
 	return pubkey, nil
+}
+
+// tlsCertPath gets the TlsCertPath from the given Config.
+// If TlsCertPath is "" (not configured), this defaults to the user's ~/.lnd/tls.cert file.
+func tlsCertPath(cfg *Config) (string, error) {
+	if cfg.TlsCertPath == "" {
+		currentUser, err := user.Current()
+		if err != nil {
+			return "", err
+		}
+		tlsCertFilePath := currentUser.HomeDir + "/.lnd/tls.cert"
+		return tlsCertFilePath, nil
+	}
+	return cfg.TlsCertPath, nil
+}
+
+// macaroonFromFile gets a Macaroon with the contents of the configured or default lnd macaroon.
+// The default is the Macaroon in the user's ~/.lnd/data/chain/bitcoin/regtest/admin.macaroon file.
+func macaroonFromFile(cfg *Config) (*macaroon.Macaroon, error) {
+	const logPrefix = "lightningnode macaroonFromFile "
+
+	// Get the macaroon for lnd grpc requests.
+	// This macaroon must support creating invoices and signing messages.
+	macaroonFilePath, err := macaroonPath(cfg)
+	if err != nil {
+		log.Fatalf(logPrefix+"failed to get macaroon from config %v, error: %v",
+			cfg, err)
+		return nil, err
+	}
+	macaroonData, err := ioutil.ReadFile(macaroonFilePath)
+	if err != nil {
+		log.Printf(logPrefix+"ReadFile %s, error: %v", cfg.MacaroonPath, err)
+		return nil, err
+	}
+
+	lndMacaroon := macaroon.Macaroon{}
+	err = lndMacaroon.UnmarshalBinary(macaroonData)
+	if err != nil {
+		log.Printf(logPrefix+"UnmarshalBinary macaroon error: %v", err)
+		return nil, err
+	}
+	return &lndMacaroon, nil
+}
+
+// macaroonPath gets the MacaroonPath from the given Config.
+// If MacaroonPath is "" (not configured), this defaults to the user's ~/.lnd admin macaroon
+// for a local bitcoin regtest network so devs/testers can mine their own blocks to pay with free coins.
+func macaroonPath(cfg *Config) (string, error) {
+	if cfg.MacaroonPath == "" {
+		currentUser, err := user.Current()
+		if err != nil {
+			return "", err
+		}
+		// Hardcode network to regtest for now
+		// to avoid risking real funds and to avoid relying on testnet miners/bandwidth.
+		// Later this should become a configurable parameter defaulting to testnet.
+		// Default to mainnet only in production releases.
+		network := "regtest"
+		macaroonPath := currentUser.HomeDir + "/.lnd/data/chain/bitcoin/" + network + "/admin.macaroon"
+		return macaroonPath, nil
+	}
+	return cfg.MacaroonPath, nil
 }
