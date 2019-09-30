@@ -15,12 +15,10 @@ import (
 
 const (
 	defaultConfFilename = "austk.conf"
-	defaultDbName       = "austk"
-	defaultDbUser       = "audiostrike"
 	defaultRESTHost     = "localhost"
 	defaultRESTPort     = 53545 // 0xd129 from Unicode symbol 0x1d129 for multi-measure rest
 	defaultRPCPort      = 53308 // 0xd03c from Unicode symbol 0x1d03c for Byzantine musical symbol rapisma
-	defaultMp3DirName   = "mp3"
+	defaultArtDirName   = "art"
 	defaultTorProxy     = "socks5://127.0.0.1:9050"
 	defaultTLSCertPath  = "./tls.cert"
 	defaultMacaroonPath = "./admin.macaroon"
@@ -33,32 +31,29 @@ const (
 
 var (
 	defaultDir    = defaultAppDir()
-	defaultMp3Dir = filepath.Join(defaultDir, defaultMp3DirName)
+	defaultArtDir = filepath.Join(defaultDir, defaultArtDirName)
 )
 
-// Config for art server.
+// Config for austk server.
 // These settings are specified in defaults, a config file, or the command line.
 // (Config file not yet implemented)
 type Config struct {
-	ArtistId       string `long:"artist" description:"artist id for publishing tracks"`
+	ArtistID       string `long:"artist" description:"artist id for publishing tracks"`
+	ArtistName     string `long:"name" description:"artist name with proper case, punctuation, spacing, etc."`
 	ConfigFilename string `long:"config" description:"config file"`
-	DbName         string `long:"dbname" description:"mysql db name"`
-	DbUser         string `long:"dbuser" description:"mysql db username"`
-	DbPassword     string `long:"dbpass" description:"mysql db password"`
 	AddMp3Filename string `long:"add" description:"mp3 file to add"`
-	Mp3Dir         string
+	ArtDir         string `long:"dir" description:"directory storing music art/artist/album/track"`
 	TorProxy       string `long:"torproxy" description:"onion-routing proxy"`
 	PeerAddress    string `long:"peer" description:"audiostrike server peer to connect"`
 	Pubkey         string `long:"pubkey"`
 	RestHost       string `long:"host" description:"ip/tor address for this audiostrike service"`
 	RestPort       int    `long:"port" description:"port where audiostrike protocol is exposed"`
 	ListenOn       string // ip address and port to listen, e.g. 0.0.0.0:53545
-	CertFilePath   string `long:"tlscert" description:"file path for tls cert"`
+	TlsCertPath    string `long:"tlscert" description:"file path for tls cert"`
 	MacaroonPath   string `long:"macaroon" description:"file path for macaroon"`
 	LndHost        string `long:"lndhost" description:"ip/onion address of lnd"`
 	LndGrpcPort    int    `long:"lndport" description:"port where lnd exposes grpc"`
 
-	InitDb      bool `long:"dbinit" description:"initialize the database (first use only)"`
 	PlayMp3     bool `long:"play" description:"play imported mp3 file (requires -file)"`
 	RunAsDaemon bool `long:"daemon" description:"run as daemon until quit signal (e.g. SIGINT)"`
 
@@ -129,25 +124,25 @@ func LoadConfig() (*Config, error) {
 
 	// The artist should configure ArtistId by specifying the `artist` flag in austk.config,
 	// or in an alternate config file specified by -config, or by command-line flag `-artist`.
-	if cfg.ArtistId == "" {
+	if cfg.ArtistID == "" {
 		// Artist id is not configured or specified so ask the artist for an id.
 		fmt.Printf(
 			"Please specify your artist id.\n" +
 				"Use your public name/identity spelled in lowercase " +
 				" with no punctuation or spaces (for example, alicetheartist): ")
-		inputArtistId, err := userInputReader.ReadString('\n')
+		inputArtistID, err := userInputReader.ReadString('\n')
 		if err != nil {
 			log.Printf(logPrefix+"Error reading ArtistId from stdin: %v", err)
 			return cfg, err
 		}
-		artistId := strings.Replace(inputArtistId, "\n", "", 1)
-		artistId = strings.ReplaceAll(artistId, " ", "")
+		artistID := strings.Replace(inputArtistID, "\n", "", 1)
+		artistID = strings.ReplaceAll(artistID, " ", "")
 		// TODO: strip other whitespace, punctuation, etc.
-		artistId = strings.ToLower(artistId)
-		if artistId == "" {
+		artistID = strings.ToLower(artistID)
+		if artistID == "" {
 			log.Fatalf(logPrefix + "No artist id. Specify your artist id to publish your music.")
 		}
-		cfg.ArtistId = artistId
+		cfg.ArtistID = artistID
 	}
 
 	return cfg, err
@@ -156,9 +151,7 @@ func LoadConfig() (*Config, error) {
 func getDefaultConfig() *Config {
 	return &Config{
 		ConfigFilename: defaultConfFilename,
-		DbName:         defaultDbName,
-		DbUser:         defaultDbUser,
-		Mp3Dir:         defaultMp3Dir,
+		ArtDir:         defaultArtDir,
 		TorProxy:       defaultTorProxy,
 		RestHost:       defaultRESTHost,
 		RestPort:       defaultRESTPort,

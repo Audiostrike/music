@@ -1,147 +1,163 @@
 package audiostrike
 
 import (
-	"context"
-	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"net/http"
 	"os"
 
+	"errors"
 	art "github.com/audiostrike/music/pkg/art"
 	"github.com/golang/protobuf/proto"
 	"github.com/gorilla/mux"
-	"github.com/lightningnetwork/lnd/lnrpc"
-	"github.com/lightningnetwork/lnd/macaroons"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials"
-	"gopkg.in/macaroon.v2"
 	"log"
-	"errors"
+	"regexp"
+	"strings"
 )
-
-// ArtServer is a repository to store/serve music and related data for this austk node.
-// Implementations may use a database, file system, test fixture, etc.
-type ArtServer interface {
-	Albums(artistId string) (map[string]art.Album, error)
-	Artists() (map[string]art.Artist, error)
-	Tracks(artistID string) (map[string]art.Track, error)
-	Peer(pubkey string) (*art.Peer, error)
-	Peers() ([]*art.Peer, error)
-	SetArtist(artist *art.Artist) error
-	SetPeer(peer *art.Peer) error
-	Track(artistId string, trackId string) (*art.Track, error)
-}
 
 var (
-	ErrArtNotFound = errors.New("ArtServer has no such art")
-	ErrPeerNotFound = errors.New("AustkServer has no such peer")
+	ErrArtNotFound      = errors.New("ArtServer has no such art")
+	ErrInvalidSignature = errors.New("Signature is not valid for the artist pubkey and message")
+	ErrPeerNotFound     = errors.New("AustkServer has no such peer")
 )
 
-// Server hosts the configured artist's art for http/tor clients who might pay the lnd node.
+// AustkServer hosts publishingArtist's art for http/tor clients who might pay the lightning node for it.
 type AustkServer struct {
 	config      *Config
 	artServer   ArtServer // interface for storing art in a file system, database, or test mock
 	httpServer  *http.Server
-	lndClient   lnrpc.LightningClient
-	lndConn     *grpc.ClientConn
+	publisher   Publisher
 	quitChannel chan bool
 }
 
+// ArtServer is a repository to store/serve music and related data for this austk node.
+// Implementations may use a database, file system, test fixture, etc.
+type ArtServer interface {
+	// Get and store artist info.
+	StoreArtist(artist *art.Artist) error
+	Artists() (map[string]*art.Artist, error)
+	Artist(artistId string) (*art.Artist, error)
+
+	// Album: an artist's optional track container to name and sequence tracks
+	StoreAlbum(album *art.Album, publisher Publisher) error
+	Albums(artistId string) (map[string]*art.Album, error)
+
+	// Get and store Track info.
+	StoreTrack(track *art.Track, publisher Publisher) error
+	StoreTrackPayload(track *art.Track, bytes []byte) error
+	Tracks(artistID string) (map[string]*art.Track, error)
+	Track(artistID string, artistTrackID string) (*art.Track, error)
+	TrackFilePath(track *art.Track) string
+
+	// Get and store network info.
+	StorePeer(peer *art.Peer, publisher Publisher) error
+	Peers() (map[string]*art.Peer, error)
+	Peer(pubkey string) (*art.Peer, error)
+
+	StorePublication(*art.ArtistPublication) error
+}
+
+type Publisher interface {
+	Artist() (*art.Artist, error)
+	Pubkey() (pubkey string, err error)
+	Sign(*art.ArtResources) (publication *art.ArtistPublication, err error)
+}
+
+var invalidIDRegex = regexp.MustCompile("[^a-z0-9.-]")
+
+// NameToId converts the name or title of an artist, album, or track
+// into a case-insensitive id usable for urls, filenames, etc.
+func NameToID(name string) string {
+	lowerCaseName := strings.ToLower(name)
+	// strip whitespace, punctuation, etc. and leave just a lower-case string of letters, numbers, periods, and dashes.
+	return invalidIDRegex.ReplaceAllString(lowerCaseName, "")
+}
+
+var invalidHierarchyRegex = regexp.MustCompile("[^/a-z0-9.-]")
+
+func TitleToHierarchy(title string) string {
+	lowerCaseTitle := strings.ToLower(title)
+	return invalidHierarchyRegex.ReplaceAllString(lowerCaseTitle, "")
+}
+
+// Artist gets the Artist publishing from this server.
+func (server *AustkServer) Artist() (*art.Artist, error) {
+	return server.publisher.Artist()
+}
+
+func (server *AustkServer) Pubkey() (string, error) {
+	return server.publisher.Pubkey()
+}
+
+func (server *AustkServer) Sign(resources *art.ArtResources) (*art.ArtistPublication, error) {
+	const logPrefix = "AustkServer Sign "
+
+	publication, err := server.publisher.Sign(resources)
+	if err != nil {
+		log.Fatalf(logPrefix+"lnd is not operational. SignMessage error: %v", err)
+		return nil, err
+	}
+	publishingArtist, err := server.Artist()
+	if err != nil {
+		log.Fatalf(logPrefix+"failed to get publishing artist, error: %v", err)
+		return nil, err
+	}
+	if publication == nil {
+		log.Fatalf(logPrefix+"No publication to sign resources %v", resources)
+		return nil, ErrArtNotFound
+	} else if publication.Artist == nil {
+		log.Fatalf(logPrefix+"No publication artist to sign resources %v", resources)
+		return nil, ErrArtNotFound
+	}
+	if publishingArtist == nil {
+		log.Fatalf(logPrefix + "server has no publishingArtist")
+		return nil, ErrArtNotFound
+	}
+	if publishingArtist.Pubkey != publication.Artist.Pubkey ||
+		publishingArtist.ArtistId != publication.Artist.ArtistId {
+		return nil, fmt.Errorf(
+			"lightning node signed with pubkey %s for artist %s but expected pubkey %s for %s",
+			publication.Artist.Pubkey, publication.Artist.ArtistId,
+			publishingArtist.Pubkey, publishingArtist.ArtistId)
+	}
+
+	return publication, nil
+}
+
 // NewAustkServer creates a new network Server to serve the configured artist's art.
-func NewAustkServer(cfg *Config, artServer ArtServer) (*AustkServer, error) {
-	const logPrefix = "server NewServer "
-	serverNameOverride := ""
-	tlsCreds, err := credentials.NewClientTLSFromFile(cfg.CertFilePath, serverNameOverride)
-	if err != nil {
-		log.Printf(logPrefix+"lnd credentials NewClientTLSFromFile error: %v", err)
-		return nil, err
-	}
+func NewAustkServer(cfg *Config, localStorage ArtServer, publisher Publisher) (*AustkServer, error) {
+	const logPrefix = "server NewAustkServer "
 
-	macaroonData, err := ioutil.ReadFile(cfg.MacaroonPath)
-	if err != nil {
-		log.Printf(logPrefix+"ReadFile macaroon %v error %v\n", cfg.MacaroonPath, err)
-		return nil, err
-	}
-	mac := &macaroon.Macaroon{}
-	err = mac.UnmarshalBinary(macaroonData)
-	if err != nil {
-		log.Printf(logPrefix+"UnmarchalBinary macaroon error: %v\n", err)
-		return nil, err
-	}
-
-	lndOpts := []grpc.DialOption{
-		grpc.WithTransportCredentials(tlsCreds),
-		grpc.WithBlock(),
-		grpc.WithPerRPCCredentials(macaroons.NewMacaroonCredential(mac)),
-	}
-
-	lndGrpcEndpoint := fmt.Sprintf("%v:%d", cfg.LndHost, cfg.LndGrpcPort)
-	log.Printf(logPrefix+"Dial lnd grpc at %v...", lndGrpcEndpoint)
-	lndConn, err := grpc.Dial(lndGrpcEndpoint, lndOpts...)
-	if err != nil {
-		log.Printf(logPrefix+"Dial lnd error: %v", err)
-		return nil, err
-	}
-	lndClient := lnrpc.NewLightningClient(lndConn)
-
-	ctx := context.Background()
-	var signMessageInput lnrpc.SignMessageRequest
-	signMessageInput.Msg = []byte("Test message")
-	signMessageResult, err := lndClient.SignMessage(ctx, &signMessageInput)
-	if err != nil {
-		log.Printf(logPrefix+"SignMessage test error: %v", err)
-		return nil, err
-	}
-	log.Printf(logPrefix+"Signed test message, signature: %v", signMessageResult.Signature)
-
-	return &AustkServer{
-		artServer: artServer,
-		config:    cfg,
-		httpServer: &http.Server{
-			Addr: "localhost",
-		},
-		lndConn:     lndConn,
-		lndClient:   lndClient,
+	server := &AustkServer{
+		artServer:   localStorage,
+		config:      cfg,
+		httpServer:  &http.Server{Addr: "localhost"},
+		publisher:   publisher,
 		quitChannel: make(chan bool),
-	}, nil
+	}
+
+	return server, nil
 }
 
 // Start the AustkServer listening for REST austk requests for art.
 func (s *AustkServer) Start() error {
 	const logPrefix = "AustkServer Start "
 
-	artists, err := s.artServer.Artists()
-	if err != nil {
-		log.Printf(logPrefix+"artServer.Artists error: %v", err)
-		return err
-	}
-	log.Printf(logPrefix+"%v artists:", len(artists))
-	for artistID, artist := range artists {
-		log.Printf(logPrefix+"\tArtist id %s: %v", artistID, artist)
-		tracks, err := s.artServer.Tracks(artistID)
-		if err != nil {
-			log.Printf(logPrefix+"artServer.Tracks error: %v", err)
-			return err
-		}
-		for trackID, track := range tracks {
-			log.Printf("\t\tTrack id: %s: %v", trackID, track)
-		}
-	}
+	s.debugPrintInventory()
 
 	// Publish this austk node as the Peer with this server's Pubkey.
-	pubkey, err := s.Pubkey()
+	pubkey, err := s.publisher.Pubkey()
 	if err != nil {
 		log.Printf(logPrefix+"Pubkey retrieval error: %v", err)
 		return err
 	}
+	log.Printf(logPrefix+"start with pubkey %s", pubkey)
 	restHost := s.RestHost()
 	restPort := s.RestPort()
 
 	selfPeer, err := s.artServer.Peer(pubkey)
 	if err == ErrPeerNotFound {
+		log.Printf(logPrefix+"artServer has no peer with this publisher's pubkey %s", pubkey)
 		selfPeer = &art.Peer{Pubkey: pubkey, Host: restHost, Port: restPort}
-		log.Printf(logPrefix+"insert selfPeer: %v", selfPeer)
 	} else if err != nil {
 		log.Printf(logPrefix+"artServer.Peer(%v) error: %v", pubkey, err)
 		return err
@@ -157,7 +173,7 @@ func (s *AustkServer) Start() error {
 			selfPeer.Port = restPort
 		}
 	}
-	err = s.artServer.SetPeer(selfPeer)
+	err = s.artServer.StorePeer(selfPeer, s.publisher)
 	if err != nil {
 		log.Printf(logPrefix+"PutPeer %v error: %v", pubkey, err)
 		return err
@@ -170,11 +186,31 @@ func (s *AustkServer) Start() error {
 	return err
 }
 
+func (s *AustkServer) debugPrintInventory() {
+	const logPrefix = "server debugPrintInventory "
+
+	artists, err := s.artServer.Artists()
+	if err != nil {
+		log.Printf(logPrefix+"artServer.Artists error: %v", err)
+		return
+	}
+	log.Printf(logPrefix+"%v artists:", len(artists))
+	for artistID, artist := range artists {
+		log.Printf(logPrefix+"\tArtist id %s: %v", artistID, artist)
+		tracks, err := s.artServer.Tracks(artistID)
+		if err != nil {
+			log.Printf(logPrefix+"artServer.Tracks error: %v", err)
+		}
+		for trackID, track := range tracks {
+			log.Printf("\t\tTrack id: %s: %v", trackID, track)
+		}
+	}
+}
+
 // serve starts listening for and handling requests to austk endpoints.
 func (server *AustkServer) serve() (err error) {
 	const logPrefix = "server serve "
 	httpRouter := mux.NewRouter()
-	httpRouter.HandleFunc("/artist/{id}", server.putArtistHandler).Methods("PUT")
 	httpRouter.HandleFunc("/", server.getAllArtHandler).Methods("GET")
 	httpRouter.HandleFunc("/art/{artist:[^/]*}/{track:.*}", server.getArtHandler).Methods("GET")
 	restAddress := fmt.Sprintf(":%d", server.config.RestPort)
@@ -194,80 +230,85 @@ func (server *AustkServer) getAllArtHandler(w http.ResponseWriter, req *http.Req
 	// preferred bit rate, or other conditions TBD.
 	// Maybe read any follow-back peer URL as well.
 
-	artists, err := server.artServer.Artists()
+	resources, err := CollectResources(server.artServer)
 	if err != nil {
-		log.Printf(logPrefix+"SelectAllArtists error: %v", err)
+		log.Printf(logPrefix+"collectResources error: %v", err)
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
+
+	publication, err := server.Sign(resources)
+	if err != nil {
+		log.Printf(logPrefix+"failed to Sign resources %v, error: %v", resources, err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	log.Printf(logPrefix+"Signed resources %v, publication: %v", resources, publication)
+	responseData, err := proto.Marshal(publication)
+	if err != nil {
+		log.Printf(logPrefix+"Marshal %v, error: %v", publication, err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	w.Write(responseData)
+}
+
+func CollectResources(artServer ArtServer) (*art.ArtResources, error) {
+	const logPrefix = "server collectResources "
+
+	artists, err := artServer.Artists()
+	if err != nil {
+		log.Printf(logPrefix+"SelectAllArtists error: %v", err)
+		return nil, err
+	}
+	log.Printf(logPrefix+"found %d artists", len(artists))
 	artistArray := make([]*art.Artist, 0, len(artists))
 	trackArray := make([]*art.Track, 0)
 	log.Println(logPrefix + "Select all artists:")
 	for _, artist := range artists {
 		log.Printf("\tArtist: %v", artist)
-		artistCopy := artist
-		artistArray = append(artistArray, &artistCopy)
-		tracks, err := server.artServer.Tracks(artist.ArtistId)
+		artistArray = append(artistArray, artist)
+		tracks, err := artServer.Tracks(artist.ArtistId)
 		if err != nil {
 			log.Printf(logPrefix+"artServer.Tracks error: %v", err)
-			w.WriteHeader(http.StatusInternalServerError)
-			return
+			return nil, err
 		}
 		for _, track := range tracks {
 			log.Printf("\tTrack: %v", track)
-			trackCopy := track
-			trackArray = append(trackArray, &trackCopy)
+			trackArray = append(trackArray, track)
 		}
 	}
-	peers, err := server.artServer.Peers()
+	peers, err := artServer.Peers()
 	if err != nil {
 		log.Printf(logPrefix+"SelectAllPeers error: %v", err)
-		w.WriteHeader(http.StatusInternalServerError)
-		return
+		return nil, err
 	}
 	peerArray := make([]*art.Peer, 0, len(peers))
 	for _, peer := range peers {
 		log.Printf("\tPeer: %v", peer)
-		peerCopy := *peer
-		peerArray = append(peerArray, &peerCopy)
+		peerArray = append(peerArray, peer)
 	}
-	reply := art.ArtReply{
+	resources := art.ArtResources{
 		Artists: artistArray,
 		Tracks:  trackArray,
 		Peers:   peerArray,
 	}
 
-	ctx := context.Background()
-	var signMessageInput lnrpc.SignMessageRequest
-	data, err := proto.Marshal(&reply)
-	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		return
-	}
-	signMessageInput.Msg = []byte(data)
-	signMessageResult, err := server.lndClient.SignMessage(ctx, &signMessageInput)
-	if err != nil {
-		log.Printf(logPrefix+"SignMessage error: %v", err)
-		w.WriteHeader(http.StatusInternalServerError)
-		return
-	}
-	log.Printf(logPrefix+"Signed message %s, signature: %v", data, signMessageResult.Signature)
-	w.WriteHeader(http.StatusOK)
-	w.Write(data)
+	return &resources, nil
 }
 
-// Pubkey returns the pubkey for the lnd server,
-// which clients can use to authenticate publications from this node.
-func (server *AustkServer) Pubkey() (string, error) {
-	ctx := context.Background()
-	getInfoRequest := lnrpc.GetInfoRequest{}
-	getInfoResponse, err := server.lndClient.GetInfo(ctx, &getInfoRequest)
-	if err != nil {
-		return "", err
-	}
-	pubkey := getInfoResponse.IdentityPubkey
+func read(publication *art.ArtistPublication) (*art.ArtResources, error) {
+	const logPrefix = "server readPublication "
 
-	return pubkey, nil
+	artResources := art.ArtResources{}
+	err := proto.Unmarshal(publication.SerializedArtResources, &artResources)
+	if err != nil {
+		log.Printf(logPrefix+"Unmarshal error: %v", err)
+		return nil, err
+	}
+	return &artResources, nil
 }
 
 // RestHost returns the tor address or ip address of this austk node.
@@ -304,47 +345,21 @@ func (server *AustkServer) Stop() error {
 	return nil
 }
 
-// putArtistHandler handles a request to put an artist into the ArtService.
-func (server *AustkServer) putArtistHandler(w http.ResponseWriter, req *http.Request) {
-	const logPrefix = "AustkServer putArtistHandler "
-	
-	requestVars := mux.Vars(req)
-	decoder := json.NewDecoder(req.Body)
-	var artist art.Artist
-	err := decoder.Decode(&artist)
-	if err != nil {
-		log.Printf(logPrefix+"Failed to decode artist from request, error: %v", err)
-		w.WriteHeader(http.StatusBadRequest)
-		// Should intelligible peers be notified, muted, or disconnected?
-		return
-	}
-	if artist.ArtistId != requestVars["artist"] {
-		// Should intelligible peers be notified, muted, or disconnected?
-		return
-	}
-	w.WriteHeader(http.StatusNotImplemented)
-	go func() {
-		err = server.artServer.SetArtist(&artist)
-		if err != nil {
-			log.Printf(logPrefix+"Failed to put artist, error: %v", err)
-		}
-	}()
-}
-
 // getArtHandler handles requests to get a specified track by a specified artist.
 func (server *AustkServer) getArtHandler(w http.ResponseWriter, req *http.Request) {
 	const logPrefix = "server getArtHandler "
 
-	artistId := mux.Vars(req)["artist"]
-	trackId := mux.Vars(req)["track"]
-	if artistId == "" || trackId == "" {
-		log.Printf(logPrefix+"expected artist and track but received artist: %s, track: %s", artistId, trackId)
+	artistID := mux.Vars(req)["artist"]
+	artistTrackID := mux.Vars(req)["track"]
+	if artistID == "" || artistTrackID == "" {
+		log.Printf(logPrefix+"expected artist and track but received artist: %s, track: %s",
+			artistID, artistTrackID)
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
-	log.Printf(logPrefix+"artist: %v, track: %v", artistId, trackId)
+	log.Printf(logPrefix+"artist: %v, track: %v", artistID, artistTrackID)
 
-	_, err := server.artServer.Track(artistId, trackId)
+	track, err := server.artServer.Track(artistID, artistTrackID)
 	if err != nil {
 		// TODO: if requested track isn't found, error with 404 Not Found
 		log.Printf(logPrefix+"failed to select track, error: %v", err)
@@ -355,9 +370,10 @@ func (server *AustkServer) getArtHandler(w http.ResponseWriter, req *http.Reques
 	// TODO: to require payment, check for secret received in receipt for paying invoice
 	// If valid secret is not supplied, issue a Lightning invoice.
 	// For now, skip the payment mechanics and serve the requested resource immediately.
-	mp3, err := OpenMp3ForTrackToRead(artistId, trackId)
+	trackFilePath := server.artServer.TrackFilePath(track)
+	mp3, err := OpenMp3ToRead(trackFilePath)
 	if err != nil {
-		log.Printf(logPrefix+"OpenMp3ForTrackToRead %s %s, error: %v", artistId, trackId, err)
+		log.Printf(logPrefix+"OpenMp3ForTrackToRead %s %s, error: %v", artistID, artistTrackID, err)
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}

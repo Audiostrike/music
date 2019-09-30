@@ -12,11 +12,7 @@ import (
 	"github.com/google/wire"
 )
 
-func injectArtServer(db *audiostrike.AustkDb) (s audiostrike.ArtServer) {
-	wire.Build(audiostrike.NewDbServer, useDbServer)
+func injectPublisher(cfg *audiostrike.Config, artServer audiostrike.ArtServer, publisher audiostrike.Publisher) (s *audiostrike.AustkServer, err error) {
+	wire.Build(audiostrike.NewAustkServer)
 	return
-}
-
-func useDbServer(dbServer *audiostrike.DbServer) audiostrike.ArtServer {
-	return dbServer
 }
