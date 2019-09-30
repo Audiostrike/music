@@ -15,8 +15,6 @@ import (
 
 const (
 	defaultConfFilename = "austk.conf"
-	defaultDbName       = "austk"
-	defaultDbUser       = "audiostrike"
 	defaultRESTHost     = "localhost"
 	defaultRESTPort     = 53545 // 0xd129 from Unicode symbol 0x1d129 for multi-measure rest
 	defaultRPCPort      = 53308 // 0xd03c from Unicode symbol 0x1d03c for Byzantine musical symbol rapisma
@@ -43,9 +41,6 @@ type Config struct {
 	ArtistID       string `long:"artist" description:"artist id for publishing tracks"`
 	ArtistName     string `long:"name" description:"artist name with proper case, punctuation, spacing, etc."`
 	ConfigFilename string `long:"config" description:"config file"`
-	DbName         string `long:"dbname" description:"mysql db name"`
-	DbUser         string `long:"dbuser" description:"mysql db username"`
-	DbPassword     string `long:"dbpass" description:"mysql db password"`
 	AddMp3Filename string `long:"add" description:"mp3 file to add"`
 	ArtDir         string `long:"dir" description:"directory storing music art/artist/album/track"`
 	TorProxy       string `long:"torproxy" description:"onion-routing proxy"`
@@ -59,7 +54,6 @@ type Config struct {
 	LndHost        string `long:"lndhost" description:"ip/onion address of lnd"`
 	LndGrpcPort    int    `long:"lndport" description:"port where lnd exposes grpc"`
 
-	InitDb      bool `long:"dbinit" description:"initialize the database (first use only)"`
 	PlayMp3     bool `long:"play" description:"play imported mp3 file (requires -file)"`
 	RunAsDaemon bool `long:"daemon" description:"run as daemon until quit signal (e.g. SIGINT)"`
 
@@ -157,8 +151,6 @@ func LoadConfig() (*Config, error) {
 func getDefaultConfig() *Config {
 	return &Config{
 		ConfigFilename: defaultConfFilename,
-		DbName:         defaultDbName,
-		DbUser:         defaultDbUser,
 		ArtDir:         defaultArtDir,
 		TorProxy:       defaultTorProxy,
 		RestHost:       defaultRESTHost,

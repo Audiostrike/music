@@ -161,18 +161,21 @@ func (fileServer *FileServer) readFile(prefixedPath string, fileInfo os.FileInfo
 		return nil
 	}
 
-	// Read it as art.ArtResources
-	// ArtistTrackID may be simple alphanumeric identifier
-	// or it may optionally include album or other slash-separated hierarchy.
-	// Optionally order tracks and albums with numeric prefixes.
-
 	// Finally, check whether this is an .mp3 file published by the artist.
 	if artistTrackMp3Regexp.MatchString(relativePath) {
 		artistTrackMp3MatchGroups := artistTrackMp3Regexp.FindStringSubmatch(relativePath)
-		// mp3 file
+		// trackID may be simple identifier composed of letters, numbers, periods, and dashes,
+		// or it may optionally include album or other slash-separated hierarchy.
+		// Optionally order tracks and albums with numeric prefixes.
 		trackID := artistTrackMp3MatchGroups[2]
-		log.Printf(logPrefix+"matched mp3 %s as track ID %s for %s",
-			prefixedPath, trackID, artistID)
+		track, err := fileServer.Track(artistID, trackID)
+		if err != nil {
+			log.Printf(logPrefix+"failed to retrieve artist %s track %s for file %s, error: %v",
+				artistID, trackID, relativePath, err)
+			return err
+		}
+		log.Printf(logPrefix+"matched mp3 %s as track %v",
+			prefixedPath, track)
 	} else {
 		return fmt.Errorf("Unknown file type: %s", prefixedPath)
 	}
@@ -309,7 +312,7 @@ func (fileServer *FileServer) AlbumTracks(artistID string, albumID string) (map[
 
 // StorePublication saves a file with the published artist details, albums, tracks, and peers.
 func (fileServer *FileServer) StorePublication(publication *art.ArtistPublication) error {
-	const logPrefix = "fileServer storeToFileSystem "
+	const logPrefix = "fileServer StorePublication "
 
 	artistId := publication.Artist.ArtistId
 	previouslyPublishedArtist := fileServer.artists[artistId]
@@ -379,7 +382,7 @@ func (fileServer *FileServer) StoreArtist(artist *art.Artist) error {
 		log.Printf("FileServer StoreArtist reject artist missing Pubkey: %v", *artist)
 		return fmt.Errorf("Failed to store artist missing Pubkey")
 	}
-	
+
 	fileServer.artists[artist.ArtistId] = artist
 
 	return nil
@@ -423,8 +426,7 @@ func (fileServer *FileServer) StoreAlbum(album *art.Album, publisher Publisher) 
 	return nil
 }
 
-// StorePeer stores the peer in the in-memory database
-// and saves it to the publisher's artist directory file system.
+// StorePeer stores the peer in the in-memory database.
 func (fileServer *FileServer) StorePeer(peer *art.Peer, publisher Publisher) error {
 	const logPrefix = "FileServer StorePeer "
 
@@ -457,8 +459,7 @@ func (fileServer *FileServer) Peers() (map[string]*art.Peer, error) {
 	return fileServer.peers, nil
 }
 
-// StoreTrack stores track in the in-memory database
-// and eventually "publishes" (flushes) all resources to the file system.
+// StoreTrack stores track metadata in the in-memory database.
 func (fileServer *FileServer) StoreTrack(track *art.Track, publisher Publisher) error {
 	const logPrefix = "FileServer StoreTrack "
 
@@ -485,6 +486,7 @@ func (fileServer *FileServer) StoreTrack(track *art.Track, publisher Publisher) 
 	return nil
 }
 
+// StoreTrackPayload stores the mp3 bytes of the given track.
 func (fileServer *FileServer) StoreTrackPayload(track *art.Track, payload []byte) error {
 	const logPrefix = "FileServer StoreTrackPayload "
 

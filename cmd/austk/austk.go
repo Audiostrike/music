@@ -59,13 +59,6 @@ func main() {
 		log.Fatalf(logPrefix+"LoadConfig error: %v", err)
 	}
 
-	if cfg.InitDb {
-		err := audiostrike.InitializeDb(cfg.DbName, cfg.DbUser, cfg.DbPassword)
-		if err != nil {
-			log.Fatalf(logPrefix+"InitializeDb error: %v", err)
-		}
-	}
-
 	localStorage, err := audiostrike.NewFileServer(cfg.ArtDir)
 	if err != nil {
 		log.Fatalf(logPrefix+"Failed to open data dir %s, error: %v", cfg.ArtDir, err)
@@ -166,7 +159,7 @@ func main() {
 			if err != nil {
 				log.Printf(logPrefix+"DownloadTracks error: %v", err)
 			}
-			err = playTracks(tracks, cfg.ArtDir)
+			err = playTracks(tracks, localStorage)
 		} else {
 			log.Printf("will not play tracks")
 		}
@@ -182,11 +175,11 @@ func main() {
 
 // playTracks opens the mp3 files of the given tracks, plays each in series, and waits for playback to finish.
 // It is used to test mp3 files added for the artist or downloaded from other artists.
-func playTracks(tracks []*art.Track, rootDirPath string) error {
-	const logPrefix = "client playTracks "
+func playTracks(tracks []*art.Track, fileServer *audiostrike.FileServer) error {
+	const logPrefix = "austk playTracks "
 
 	for _, track := range tracks {
-		mp3FilePath := filepath.Join(rootDirPath, track.ArtistId, track.ArtistTrackId+".mp3")
+		mp3FilePath := fileServer.TrackFilePath(track)
 		mp3, err := audiostrike.OpenMp3ToRead(mp3FilePath)
 		if err != nil {
 			log.Fatalf(logPrefix+"OpenMp3ToRead %v, error: %v", track, err)

@@ -9,14 +9,6 @@ import (
 	"github.com/audiostrike/music/internal"
 )
 
-// Injectors from wire_db.go:
-
-func injectDbServer(db *audiostrike.AustkDb, artRootPath string) audiostrike.ArtServer {
-	dbServer := audiostrike.NewDbServer(db, artRootPath)
-	artServer := useDbServer(dbServer)
-	return artServer
-}
-
 // Injectors from wire_files.go:
 
 func injectFileServer(artDirPath string) (audiostrike.ArtServer, error) {
@@ -47,12 +39,6 @@ func injectPublisher(cfg *audiostrike.Config, artServer audiostrike.ArtServer, p
 		return nil, err
 	}
 	return austkServer, nil
-}
-
-// wire_db.go:
-
-func useDbServer(dbServer *audiostrike.DbServer) audiostrike.ArtServer {
-	return dbServer
 }
 
 // wire_files.go:

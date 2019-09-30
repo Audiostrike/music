@@ -17,13 +17,14 @@ const (
 	mockTrackID  string = "testtrack"
 )
 
+// TODO: move this to test.conf file
 var cfg *Config = &Config{
 	ArtistID:     mockArtistID,
 	ArtDir:       "testart",
 	TlsCertPath:  "regtest.tls.cert",
 	MacaroonPath: "regtest.macaroon",
-	LndHost:      "127.0.0.1",
-	LndGrpcPort:  10009,
+	LndHost:      "192.168.122.73",
+	LndGrpcPort:  11009, // regtest
 }
 
 var mockLightningClient MockLightningClient = MockLightningClient{}
