@@ -23,8 +23,6 @@ type Client struct {
 	connectionCtx    context.Context
 	connectionCancel context.CancelFunc
 
-	// publisher signs/checks signature of an artist's resources for a publication.
-	publisher Publisher
 	// publishedArtist, publications, and resources are art resources this peer published.
 	publishedArtists map[string]*art.Artist
 	publications     map[string]*art.ArtistPublication
@@ -32,7 +30,7 @@ type Client struct {
 }
 
 // NewClient creates a new austk Client to communicate over torProxy with peerAddress.
-func NewClient(torProxy string, peerAddress string, publisher Publisher) (*Client, error) {
+func NewClient(torProxy string, peerAddress string) (*Client, error) {
 	const logPrefix = "client NewClient "
 
 	ctx := context.Background()
@@ -50,7 +48,6 @@ func NewClient(torProxy string, peerAddress string, publisher Publisher) (*Clien
 		connectionCtx:    connectionCtx,
 		connectionCancel: connectionCancel,
 		torClient:        torClient,
-		publisher:        publisher,
 		publishedArtists: make(map[string]*art.Artist),
 		publications:     make(map[string]*art.ArtistPublication),
 		resources:        make(map[string]*art.ArtResources),

@@ -32,7 +32,7 @@ var mockLightningClient MockLightningClient = MockLightningClient{}
 type MockArtServer struct {
 	artists  map[string]*art.Artist
 	albums   map[string]map[string]*art.Album
-	peers    map[string]*art.Peer
+	peers    map[Pubkey]*art.Peer
 	tracks   map[string]map[string]*art.Track
 	payloads map[string]map[string][]byte
 }
@@ -45,7 +45,7 @@ func (s *MockArtServer) Artist(artistId string) (*art.Artist, error) {
 	return s.artists[artistId], nil
 }
 
-func (s *MockArtServer) StoreAlbum(album *art.Album, publisher Publisher) error {
+func (s *MockArtServer) StoreAlbum(album *art.Album) error {
 	s.albums[album.ArtistId][album.ArtistAlbumId] = album
 	return nil
 }
@@ -63,7 +63,7 @@ func (s *MockArtServer) Peer(pubkey string) (*art.Peer, error) {
 	return nil, ErrPeerNotFound
 }
 
-func (s *MockArtServer) Peers() (map[string]*art.Peer, error) {
+func (s *MockArtServer) Peers() (map[Pubkey]*art.Peer, error) {
 	return s.peers, nil
 }
 
@@ -71,14 +71,14 @@ func (s *MockArtServer) StoreArtist(artist *art.Artist) error {
 	return fmt.Errorf("not implemented")
 }
 
-func (s *MockArtServer) StorePeer(peer *art.Peer, publisher Publisher) error {
+func (s *MockArtServer) StorePeer(peer *art.Peer) error {
 	for i, old := range s.peers {
 		if old.Pubkey == peer.Pubkey {
 			s.peers[i] = peer
 			return nil
 		}
 	}
-	s.peers[peer.Pubkey] = peer
+	s.peers[Pubkey(peer.Pubkey)] = peer
 	return nil
 }
 
@@ -97,7 +97,7 @@ func (s *MockArtServer) TrackFilePath(track *art.Track) string {
 	return filepath.Join(cfg.ArtDir, track.ArtistId, track.ArtistTrackId+".mp3")
 }
 
-func (s *MockArtServer) StoreTrack(track *art.Track, publisher Publisher) error {
+func (s *MockArtServer) StoreTrack(track *art.Track) error {
 	s.tracks[track.ArtistId][track.ArtistTrackId] = track
 	return nil
 }
@@ -115,6 +115,24 @@ func (s *MockArtServer) StorePublication(publication *art.ArtistPublication) err
 	return fmt.Errorf("MockArtServer StorePublication not implemented")
 }
 
+func (s *MockArtServer) StoreInvoice(invoice *art.Invoice) error {
+	paymentHash, err := lntypes.MakeHash(invoice.LightningPaymentHash)
+	if err != nil {
+		return err
+	}
+	s.invoices[paymentHash] = invoice
+	return fmt.Errorf("MockArtServer StoreInvoice not implemented")
+}
+
+func (s *MockArtServer) Invoice(paymentHash *lntypes.Hash) (*art.Invoice, error) {
+	invoice, found := s.invoices[*paymentHash]
+	if found {
+		return invoice, nil
+	} else {
+		return nil, fmt.Errorf("MockArtServer Invoice %x not found: %v", *paymentHash, s.invoices)
+	}
+}
+
 var mockArtServer MockArtServer = MockArtServer{
 	artists: map[string]*art.Artist{
 		mockArtistID: &art.Artist{
@@ -122,7 +140,7 @@ var mockArtServer MockArtServer = MockArtServer{
 			Pubkey:   mockPubkey,
 		},
 	},
-	peers: map[string]*art.Peer{},
+	peers: map[Pubkey]*art.Peer{},
 	tracks: map[string]map[string]*art.Track{
 		mockArtistID: map[string]*art.Track{
 			mockTrackID: &art.Track{
@@ -156,7 +174,7 @@ func TestGetAllArt(t *testing.T) {
 	response, err := http.Get(testHttpServer.URL)
 
 	// Verify that the server handled the request successfully.
-	if response.StatusCode != 200 {
+	if response.StatusCode != http.StatusOK {
 		t.Errorf("expected success but got %d", response.StatusCode)
 	}
 
@@ -224,6 +242,68 @@ func TestGetArt(t *testing.T) {
 	response, err := http.Get(artRequestUrl)
 	bytes, err := ioutil.ReadAll(response.Body)
 
+	// Verify that payment is required.
+	if response.StatusCode != http.StatusPaymentRequired {
+		t.Errorf("expected success but got %d", response.StatusCode)
+	}
+
+	// Verify that the one test artist and her music was served.
+	if string(bytes) != "payment req'd" {
+		t.Errorf("expected payment required but got reply %v", bytes)
+	}
+}
+
+// TestGetTrack verifies that the server serves the specified track with proof of payment.
+func TestGetTrack(t *testing.T) {
+	mockLightningPublisher, err := NewLightningPublisher(cfg, &mockArtServer)
+	if err != nil {
+		t.Errorf("Failed to instantiate lightning node, error: %v", err)
+	}
+	austkServer, err := NewAustkServer(cfg, &mockArtServer, mockLightningPublisher)
+	if err != nil {
+		t.Errorf("Failed to connect to music DB, error %v", err)
+	}
+
+	// Start an httptest server to record and test the reply of austkServer's handlerFunc.
+	testRouter := mux.NewRouter()
+	testRouter.HandleFunc("/art/{artist:[^/]*}/{track:.*}",
+		http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			austkServer.getTrackHandler(w, req)
+		})).Methods("GET")
+	testHttpServer := httptest.NewServer(testRouter)
+	defer testHttpServer.Close()
+
+	// Get the reply to verify that austkServer published the expected art.
+	artRequestUrl := fmt.Sprintf("%s/art/%s/%s", testHttpServer.URL, mockArtistID, mockTrackID)
+	mockPreimage := []byte("test-preimage")
+	mockPreimageHex := hex.EncodeToString(mockPreimage)
+	t.Logf("request url %s with preimage %s", artRequestUrl, mockPreimageHex)
+	mockPaymentHashArray := sha256.Sum256(mockPreimage)
+	mockPaymentHash, err := lntypes.MakeHash(mockPaymentHashArray[:])
+	if err != nil {
+		t.Errorf("failed to hash preimage, error: %v", err)
+	}
+	t.Logf("mock payment hash: %v", mockPaymentHash)
+	mockArtServer.StoreInvoice(&art.Invoice{
+		Tracks: []*art.Track{
+			&art.Track{ArtistId: mockArtistID, ArtistTrackId: mockTrackID},
+		},
+		LightningPaymentHash: []byte(
+			"\x88\x6b\x48\x00\x26\x95\x2d\x35\xfb\x95\x15\x3c\x75\xca\x91\xa8\x5e\xa0\xb5\x62\xd1\x11\x3a\xcf\xc6\x6d\xa7\x6c\x56\x32\xf3\x78",
+		)})
+	testClient := testHttpServer.Client()
+	request, err := http.NewRequest("GET", artRequestUrl, nil)
+	if err != nil {
+		t.Errorf("Failed to request track from %s, error: %v", artRequestUrl, err)
+	}
+	request.Header.Set("Payment-Preimage", mockPreimageHex)
+	response, err := testClient.Do(request)
+	if err != nil {
+		t.Errorf("Failed to get track from %s, error: %v", artRequestUrl, err)
+	}
+	bytes, err := ioutil.ReadAll(response.Body)
+
+	// Verify that payment is required.
 	// Verify that the server handled the request successfully.
 	if response.StatusCode != 200 {
 		t.Errorf("expected success but got %d", response.StatusCode)

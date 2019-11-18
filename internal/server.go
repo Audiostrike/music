@@ -38,20 +38,24 @@ type ArtServer interface {
 	Artist(artistId string) (*art.Artist, error)
 
 	// Album: an artist's optional track container to name and sequence tracks
-	StoreAlbum(album *art.Album, publisher Publisher) error
+	StoreAlbum(*art.Album) error
 	Albums(artistId string) (map[string]*art.Album, error)
 
 	// Get and store Track info.
-	StoreTrack(track *art.Track, publisher Publisher) error
-	StoreTrackPayload(track *art.Track, bytes []byte) error
+	StoreTrack(*art.Track) error
+	StoreTrackPayload(*art.Track, []byte) error
 	Tracks(artistID string) (map[string]*art.Track, error)
 	Track(artistID string, artistTrackID string) (*art.Track, error)
 	TrackFilePath(track *art.Track) string
 
+	// Get and store an Invoice.
+	StoreInvoice(*art.Invoice) error
+	Invoice(paymentHash *lntypes.Hash) (*art.Invoice, error)
+
 	// Get and store network info.
-	StorePeer(peer *art.Peer, publisher Publisher) error
-	Peers() (map[string]*art.Peer, error)
-	Peer(pubkey string) (*art.Peer, error)
+	StorePeer(*art.Peer) error
+	Peers() (map[Pubkey]*art.Peer, error)
+	Peer(Pubkey) (*art.Peer, error)
 
 	StorePublication(*art.ArtistPublication) error
 }
@@ -173,7 +177,7 @@ func (s *AustkServer) Start() error {
 			selfPeer.Port = restPort
 		}
 	}
-	err = s.artServer.StorePeer(selfPeer, s.publisher)
+	err = s.artServer.StorePeer(selfPeer)
 	if err != nil {
 		log.Printf(logPrefix+"PutPeer %v error: %v", pubkey, err)
 		return err
@@ -387,4 +391,102 @@ func (server *AustkServer) getArtHandler(w http.ResponseWriter, req *http.Reques
 	log.Printf(logPrefix+"serving track as %d bytes of data", len(trackData))
 	w.WriteHeader(http.StatusOK)
 	w.Write(trackData)
+}
+
+func doesInvoiceHaveTrack(invoice *art.Invoice, track *art.Track) bool {
+	if invoice == nil {
+		return false
+	}
+	for _, invoiceTrack := range invoice.Tracks {
+		if track.ArtistId == invoiceTrack.ArtistId &&
+			track.ArtistTrackId == invoiceTrack.ArtistTrackId {
+			return true
+		}
+	}
+	return false
+}
+
+// getTrackInvoiceHandler handles requests to get a specified track by a specified artist.
+func (server *AustkServer) getTrackInvoiceHandler(w http.ResponseWriter, req *http.Request) {
+	const logPrefix = "(*AustkServer) getTrackInvoiceHandler "
+
+	artistID := mux.Vars(req)["artist"]
+	artistTrackID := mux.Vars(req)["track"]
+	if artistID == "" || artistTrackID == "" {
+		log.Printf(logPrefix+"expected artist and track but received artist: %s, track: %s",
+			artistID, artistTrackID)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	log.Printf(logPrefix+"artist: %s, track: %s", artistID, artistTrackID)
+
+	track, err := server.artServer.Track(artistID, artistTrackID)
+	if err != nil {
+		// TODO: if requested track isn't found, error with 404 Not Found
+		log.Printf(logPrefix+"failed to select track, error: %v", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	trackFilePath := server.artServer.TrackFilePath(track)
+	mp3, err := OpenMp3ToRead(trackFilePath)
+	if err != nil {
+		log.Printf(logPrefix+"OpenMp3ForTrackToRead %s %s, error: %v", artistID, artistTrackID, err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	trackData, err := mp3.ReadBytes()
+	if err != nil {
+		log.Printf(logPrefix+"mp3.ReadBytes error: %v", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	// Hash trackData to compose a Lightning invoice
+	// that commits to the track's metadata and its trackData hash.
+	trackHash := sha256.Sum256(trackData)
+	log.Printf(logPrefix+"invoice for track: %s, hash: %x...", trackFilePath, trackHash[0:32])
+	trackPath := filepath.Join(track.ArtistId, track.ArtistTrackId)
+	//issued, err := time.Now().UTC().MarshalJSON()
+	//if err != nil {
+	//	log.Printf(logPrefix + "Failed to marshal issued-time into invoice memo")
+	//	w.WriteHeader(http.StatusInternalServerError)
+	//	return
+	//}
+	//invoiceId := fmt.Sprintf("%s %x %s", issued, trackPath, trackHash)
+	trackInvoiceMemo := fmt.Sprintf("%s %x", trackPath, trackHash[0:32])
+	invoice, err := server.publisher.NewInvoice(&art.ArtResources{
+		Tracks: []*art.Track{track},
+	})
+	if err != nil {
+		log.Printf(logPrefix+"Failed to add lightning invoice for track memo: %s, error: %v",
+			trackInvoiceMemo, err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	// save preimage to local storage for fast lookup without hashing
+	err = server.artServer.StoreInvoice(invoice)
+	if err != nil {
+		log.Printf(logPrefix+"Failed to store invoice, error: %v", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	// preimage := invoice.Preimage
+	// err = server.artServer.IndexInvoice(invoice, preimage)
+	// if err != nil {
+	// 	log.Printf(logPrefix+"Failed to index invoice, error: %v", err)
+	// }
+	log.Printf(logPrefix+"serving invoice for track as %d bytes of data", len(trackData))
+
+	invoiceResponseBytes, err := proto.Marshal(invoice)
+	if err != nil {
+		log.Printf(logPrefix+"Failed to send invoice, error: %v", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	w.Write(invoiceResponseBytes)
+	w.WriteHeader(http.StatusOK)
 }

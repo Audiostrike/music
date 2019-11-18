@@ -427,23 +427,10 @@ func (fileServer *FileServer) StoreAlbum(album *art.Album, publisher Publisher) 
 }
 
 // StorePeer stores the peer in the in-memory database.
-func (fileServer *FileServer) StorePeer(peer *art.Peer, publisher Publisher) error {
+func (fileServer *FileServer) StorePeer(peer *art.Peer) error {
 	const logPrefix = "FileServer StorePeer "
 
-	publishingArtist, err := publisher.Artist()
-	if err != nil {
-		log.Fatalf(logPrefix+"failed to get Artist for publisher %v, error: %v", publisher, err)
-		return err
-	}
-
-	log.Printf("FileServer StorePeer %v for publishing artist %v", peer, publishingArtist)
-	if publishingArtist.Pubkey == peer.Pubkey {
-		fileServer.peers[peer.Pubkey] = peer
-	} else {
-		log.Printf(logPrefix+"skip StorePeer %v because pubkey does not match artist %v, error: %v",
-			peer, publishingArtist, err)
-		return err
-	}
+	fileServer.peers[Pubkey(peer.Pubkey)] = peer
 	return nil
 }
 
@@ -460,7 +447,7 @@ func (fileServer *FileServer) Peers() (map[string]*art.Peer, error) {
 }
 
 // StoreTrack stores track metadata in the in-memory database.
-func (fileServer *FileServer) StoreTrack(track *art.Track, publisher Publisher) error {
+func (fileServer *FileServer) StoreTrack(track *art.Track) error {
 	const logPrefix = "FileServer StoreTrack "
 
 	tracksForArtist := fileServer.tracks[track.ArtistId]

@@ -100,10 +100,12 @@ func main() {
 		}
 		defer austkServer.Stop()
 
-		cfg.Pubkey, err = austkServer.Pubkey()
+		pubkey, err := austkServer.Pubkey()
 		if err != nil {
 			log.Fatalf(logPrefix+"error getting server pubkey: %v", err)
 		}
+		
+		cfg.Pubkey = string(pubkey)
 	}
 
 	if cfg.PeerAddress != "" {
@@ -120,7 +122,7 @@ func main() {
 		}
 		peerPort := uint32(peerPortUint)
 		peer := art.Peer{Pubkey: peerPubkey, Host: peerHost, Port: peerPort}
-		err = localStorage.StorePeer(&peer, austkServer)
+		err = localStorage.StorePeer(&peer)
 		if err != nil {
 			log.Fatalf(logPrefix+"failed to store configured peer %s, error: %v", cfg.PeerAddress, err)
 		}
@@ -138,7 +140,7 @@ func main() {
 		log.Printf(logPrefix+"sync from peer %v", peer)
 		peerAddress := fmt.Sprintf("%s:%d", peer.Host, peer.Port)
 
-		client, err := audiostrike.NewClient(cfg.TorProxy, peerAddress, austkServer)
+		client, err := audiostrike.NewClient(cfg.TorProxy, peerAddress)
 		if err != nil {
 			log.Fatalf(logPrefix+"NewClient via torProxy %v to peerAddress %v, error: %v",
 				cfg.TorProxy, peer.Host, err)
@@ -243,7 +245,7 @@ func storeMp3File(cfg *audiostrike.Config, filename string, localStorage audiost
 			ArtistId:      artistID,
 			ArtistAlbumId: artistAlbumID,
 			Title:         albumTitle,
-		}, austkServer)
+		})
 		artistTrackID = filepath.Join(artistAlbumID, trackTitleID)
 	} else {
 		artistAlbumID = ""
@@ -257,7 +259,7 @@ func storeMp3File(cfg *audiostrike.Config, filename string, localStorage audiost
 		Title:         trackTitle,
 		ArtistAlbumId: artistAlbumID,
 	}
-	err = localStorage.StoreTrack(track, austkServer)
+	err = localStorage.StoreTrack(track)
 	if err != nil {
 		log.Printf(logPrefix+"StoreTrack %v, error: %v", track, err)
 		return nil, err
