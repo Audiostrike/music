@@ -23,7 +23,11 @@ func injectFileServer(artDirPath string) (audiostrike.ArtServer, error) {
 // Injectors from wire_lightning.go:
 
 func injectLightningPublisher(cfg *audiostrike.Config, artServer audiostrike.ArtServer) (audiostrike.Publisher, error) {
-	lightningPublisher, err := audiostrike.NewLightningPublisher(cfg, artServer)
+	artist, err := publishAsConfigArtist(cfg, artServer)
+	if err != nil {
+		return nil, err
+	}
+	lightningPublisher, err := audiostrike.NewLightningPublisher(cfg, artist)
 	if err != nil {
 		return nil, err
 	}

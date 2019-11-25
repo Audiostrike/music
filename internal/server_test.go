@@ -1,15 +1,19 @@
 package audiostrike
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
-	art "github.com/audiostrike/music/pkg/art"
-	"github.com/golang/protobuf/proto"
-	"github.com/gorilla/mux"
 	"io/ioutil"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"testing"
+
+	art "github.com/audiostrike/music/pkg/art"
+	"github.com/golang/protobuf/proto"
+	"github.com/gorilla/mux"
+	"github.com/lightningnetwork/lnd/lntypes"
 )
 
 const (
@@ -35,6 +39,7 @@ type MockArtServer struct {
 	peers    map[Pubkey]*art.Peer
 	tracks   map[string]map[string]*art.Track
 	payloads map[string]map[string][]byte
+	invoices map[lntypes.Hash]*art.Invoice
 }
 
 func (s *MockArtServer) Artists() (map[string]*art.Artist, error) {
@@ -54,9 +59,9 @@ func (s *MockArtServer) Albums(artistId string) (map[string]*art.Album, error) {
 	return s.albums[artistId], nil
 }
 
-func (s *MockArtServer) Peer(pubkey string) (*art.Peer, error) {
+func (s *MockArtServer) Peer(pubkey Pubkey) (*art.Peer, error) {
 	for _, peer := range s.peers {
-		if peer.Pubkey == pubkey {
+		if Pubkey(peer.Pubkey) == pubkey {
 			return peer, nil
 		}
 	}
@@ -135,10 +140,7 @@ func (s *MockArtServer) Invoice(paymentHash *lntypes.Hash) (*art.Invoice, error)
 
 var mockArtServer MockArtServer = MockArtServer{
 	artists: map[string]*art.Artist{
-		mockArtistID: &art.Artist{
-			ArtistId: mockArtistID,
-			Pubkey:   mockPubkey,
-		},
+		mockArtistID: &mockArtist,
 	},
 	peers: map[Pubkey]*art.Peer{},
 	tracks: map[string]map[string]*art.Track{
@@ -149,15 +151,16 @@ var mockArtServer MockArtServer = MockArtServer{
 			},
 		},
 	},
+	invoices: map[lntypes.Hash]*art.Invoice{},
 }
 
 // TestGetAllArt tests that AustkServer's getAllArtHandler returns art from the given ArtServer.
 func TestGetAllArt(t *testing.T) {
-	mockLightningNode, err := NewMockLightningNode(cfg, &mockArtServer)
+	mockLightningPublisher, err := NewMockLightningPublisher(cfg, &mockArtServer)
 	if err != nil {
 		t.Errorf("Failed to instantiate lightning node, error: %v", err)
 	}
-	austkServer, err := NewAustkServer(cfg, &mockArtServer, mockLightningNode)
+	austkServer, err := NewAustkServer(cfg, &mockArtServer, mockLightningPublisher)
 	if err != nil {
 		t.Errorf("Failed to connect to music DB, error %v", err)
 	}
@@ -197,7 +200,7 @@ func TestGetAllArt(t *testing.T) {
 		t.Errorf("expected 1 artist but got %d in reply: %v", len(artResources.Artists), artResources)
 	}
 	replyArtist := artResources.Artists[0]
-	if replyArtist.Pubkey != mockPubkey {
+	if Pubkey(replyArtist.Pubkey) != mockPubkey {
 		t.Errorf("expected artist with mock pubkey %s but got %s in reply: %v",
 			mockPubkey, replyArtist.Pubkey, artResources)
 	}
@@ -216,13 +219,13 @@ func TestGetAllArt(t *testing.T) {
 	}
 }
 
-// TestGetArt
-func TestGetArt(t *testing.T) {
-	mockLightningNode, err := NewLightningNode(cfg, &mockArtServer)
+// TestPaymentRequired verifies that proof of payment is required when requesting a track.
+func TestPaymentRequired(t *testing.T) {
+	mockLightningPublisher, err := NewLightningPublisher(cfg, &mockArtist)
 	if err != nil {
 		t.Errorf("Failed to instantiate lightning node, error: %v", err)
 	}
-	austkServer, err := NewAustkServer(cfg, &mockArtServer, mockLightningNode)
+	austkServer, err := NewAustkServer(cfg, &mockArtServer, mockLightningPublisher)
 	if err != nil {
 		t.Errorf("Failed to connect to music DB, error %v", err)
 	}
@@ -231,7 +234,7 @@ func TestGetArt(t *testing.T) {
 	testRouter := mux.NewRouter()
 	testRouter.HandleFunc("/art/{artist:[^/]*}/{track:.*}",
 		http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-			austkServer.getArtHandler(w, req)
+			austkServer.getTrackHandler(w, req)
 		})).Methods("GET")
 	testHttpServer := httptest.NewServer(testRouter)
 	defer testHttpServer.Close()
@@ -255,7 +258,7 @@ func TestGetArt(t *testing.T) {
 
 // TestGetTrack verifies that the server serves the specified track with proof of payment.
 func TestGetTrack(t *testing.T) {
-	mockLightningPublisher, err := NewLightningPublisher(cfg, &mockArtServer)
+	mockLightningPublisher, err := NewLightningPublisher(cfg, &mockArtist)
 	if err != nil {
 		t.Errorf("Failed to instantiate lightning node, error: %v", err)
 	}
@@ -317,7 +320,7 @@ func TestGetTrack(t *testing.T) {
 
 // Verify that the server publishes itself as the Peer with its Pubkey.
 func TestPeersForServerPubkey(t *testing.T) {
-	mockLightningNode, err := NewMockLightningNode(cfg, &mockArtServer)
+	mockLightningNode, err := NewMockLightningPublisher(cfg, &mockArtServer)
 	if err != nil {
 		t.Errorf("failed to instantiate lightning node, error: %v", err)
 	}
@@ -331,7 +334,7 @@ func TestPeersForServerPubkey(t *testing.T) {
 	if err != nil {
 		t.Errorf("Failed to Start austkServer, error: %v", err)
 	}
-	lndPubkey, err := austkServer.Pubkey()
+	lndPubkey, err := austkServer.publisher.Pubkey()
 	if err != nil {
 		t.Errorf("lndPubkey error: %v", err)
 	}
@@ -367,7 +370,7 @@ func TestPeersForServerPubkey(t *testing.T) {
 		t.Errorf("expected 1 peer but got %d in reply: %v", len(artResources.Peers), artResources)
 	}
 	replyPeer := artResources.Peers[0]
-	if replyPeer.Pubkey != lndPubkey {
+	if Pubkey(replyPeer.Pubkey) != lndPubkey {
 		t.Errorf("expected peer with pubkey %s but got %s in reply: %v",
 			lndPubkey, replyPeer.Pubkey, artResources)
 	}

@@ -13,7 +13,7 @@ import (
 )
 
 func injectLightningPublisher(cfg *audiostrike.Config, artServer audiostrike.ArtServer) (p audiostrike.Publisher, e error) {
-	wire.Build(audiostrike.NewLightningPublisher, useLightningPublisher)
+	wire.Build(audiostrike.NewLightningPublisher, publishAsConfigArtist, useLightningPublisher)
 	return
 }
 

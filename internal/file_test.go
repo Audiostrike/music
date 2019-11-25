@@ -14,8 +14,8 @@ const (
 
 var mockArtist = art.Artist{
 	ArtistId: mockArtistID,
-	Name:     "Artist McTester",
-	Pubkey:   mockPubkey}
+	Name:     "Alice McTester",
+	Pubkey:   string(mockPubkey)}
 
 type MockPublisher struct{}
 
@@ -23,7 +23,7 @@ func (s *MockPublisher) Artist() (*art.Artist, error) {
 	return &mockArtist, nil
 }
 
-func (s *MockPublisher) Pubkey() (string, error) {
+func (s *MockPublisher) Pubkey() (Pubkey, error) {
 	return mockPubkey, nil
 }
 
@@ -216,7 +216,7 @@ func TestPeers(t *testing.T) {
 	if fetchedPeer == nil {
 		t.Errorf("Peer failed to fetch for pubkey %s", mockPubkey)
 	}
-	if fetchedPeer.Pubkey != mockPubkey {
+	if Pubkey(fetchedPeer.Pubkey) != mockPubkey {
 		t.Errorf("Peer fetched had the wrong pubkey (%s), expected %s",
 			fetchedPeer.Pubkey, mockPubkey)
 	}

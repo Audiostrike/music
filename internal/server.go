@@ -1,24 +1,37 @@
 package audiostrike
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
+	"path/filepath"
+	"regexp"
+	"strconv"
+	"strings"
 
-	"errors"
 	art "github.com/audiostrike/music/pkg/art"
 	"github.com/golang/protobuf/proto"
 	"github.com/gorilla/mux"
-	"log"
-	"regexp"
-	"strings"
+	"github.com/lightningnetwork/lnd/lntypes"
+)
+
+const (
+	HttpHeaderPaymentHash     = "Payment-Hash"
+	HttpHeaderPaymentPreimage = "Payment-Preimage"
 )
 
 var (
 	ErrArtNotFound      = errors.New("ArtServer has no such art")
 	ErrInvalidSignature = errors.New("Signature is not valid for the artist pubkey and message")
 	ErrPeerNotFound     = errors.New("AustkServer has no such peer")
+	ErrInvoiceNotFound  = errors.New("Invoice not found")
 )
+
+type Pubkey string
 
 // AustkServer hosts publishingArtist's art for http/tor clients who might pay the lightning node for it.
 type AustkServer struct {
@@ -62,8 +75,10 @@ type ArtServer interface {
 
 type Publisher interface {
 	Artist() (*art.Artist, error)
-	Pubkey() (pubkey string, err error)
-	Sign(*art.ArtResources) (publication *art.ArtistPublication, err error)
+	Pubkey() (Pubkey, error)
+	Publish(*art.ArtResources) (*art.ArtistPublication, error)
+	NewInvoice(tracks []*art.Track, amount int32, unit art.Bolt11AmountMultiplier) (*art.Invoice, error)
+	Invoice(paymentHash *lntypes.Hash) (*art.Invoice, error)
 }
 
 var invalidIDRegex = regexp.MustCompile("[^a-z0-9.-]")
@@ -88,14 +103,14 @@ func (server *AustkServer) Artist() (*art.Artist, error) {
 	return server.publisher.Artist()
 }
 
-func (server *AustkServer) Pubkey() (string, error) {
-	return server.publisher.Pubkey()
-}
+// func (server *AustkServer) Pubkey() (Pubkey, error) {
+// 	return server.publisher.Pubkey()
+// }
 
 func (server *AustkServer) Sign(resources *art.ArtResources) (*art.ArtistPublication, error) {
 	const logPrefix = "AustkServer Sign "
 
-	publication, err := server.publisher.Sign(resources)
+	publication, err := server.publisher.Publish(resources)
 	if err != nil {
 		log.Fatalf(logPrefix+"lnd is not operational. SignMessage error: %v", err)
 		return nil, err
@@ -161,7 +176,7 @@ func (s *AustkServer) Start() error {
 	selfPeer, err := s.artServer.Peer(pubkey)
 	if err == ErrPeerNotFound {
 		log.Printf(logPrefix+"artServer has no peer with this publisher's pubkey %s", pubkey)
-		selfPeer = &art.Peer{Pubkey: pubkey, Host: restHost, Port: restPort}
+		selfPeer = &art.Peer{Pubkey: string(pubkey), Host: restHost, Port: restPort}
 	} else if err != nil {
 		log.Printf(logPrefix+"artServer.Peer(%v) error: %v", pubkey, err)
 		return err
@@ -216,7 +231,8 @@ func (server *AustkServer) serve() (err error) {
 	const logPrefix = "server serve "
 	httpRouter := mux.NewRouter()
 	httpRouter.HandleFunc("/", server.getAllArtHandler).Methods("GET")
-	httpRouter.HandleFunc("/art/{artist:[^/]*}/{track:.*}", server.getArtHandler).Methods("GET")
+	httpRouter.HandleFunc("/art/{artist:[^/]*}/{track:.*}", server.getTrackHandler).Methods("GET")
+	httpRouter.HandleFunc("/invoice/{artist:[^/]*}/{track:.*}", server.getTrackInvoiceHandler).Methods("GET")
 	restAddress := fmt.Sprintf(":%d", server.config.RestPort)
 	err = http.ListenAndServe(restAddress, httpRouter)
 	if err != nil {
@@ -350,8 +366,8 @@ func (server *AustkServer) Stop() error {
 }
 
 // getArtHandler handles requests to get a specified track by a specified artist.
-func (server *AustkServer) getArtHandler(w http.ResponseWriter, req *http.Request) {
-	const logPrefix = "server getArtHandler "
+func (server *AustkServer) getTrackHandler(w http.ResponseWriter, req *http.Request) {
+	const logPrefix = "(*AustkServer) getTrackHandler "
 
 	artistID := mux.Vars(req)["artist"]
 	artistTrackID := mux.Vars(req)["track"]
@@ -361,17 +377,60 @@ func (server *AustkServer) getArtHandler(w http.ResponseWriter, req *http.Reques
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
-	log.Printf(logPrefix+"artist: %v, track: %v", artistID, artistTrackID)
-
-	track, err := server.artServer.Track(artistID, artistTrackID)
-	if err != nil {
-		// TODO: if requested track isn't found, error with 404 Not Found
-		log.Printf(logPrefix+"failed to select track, error: %v", err)
-		w.WriteHeader(http.StatusInternalServerError)
+	paymentPreimageHex := req.Header.Get(HttpHeaderPaymentPreimage)
+	if paymentPreimageHex == "" {
+		log.Printf(logPrefix+"request lacks header "+HttpHeaderPaymentPreimage+", headers: %v",
+			req.Header)
+		w.WriteHeader(http.StatusPaymentRequired) // 402 Payment Required
+		w.Write([]byte("payment req'd"))
 		return
 	}
 
-	// TODO: to require payment, check for secret received in receipt for paying invoice
+	paymentPreimageBytes, err := hex.DecodeString(paymentPreimageHex)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest) // 400 Bad Request
+		w.Write([]byte(HttpHeaderPaymentPreimage + " must be hex encoded payment preimage"))
+		return
+	}
+	log.Printf(logPrefix+"artist: %s, track: %s, paymentPreimageHex: %s", artistID, artistTrackID, paymentPreimageHex)
+	paymentHashArray := sha256.Sum256(paymentPreimageBytes)
+	paymentHash, err := lntypes.MakeHash(paymentHashArray[:])
+	if err != nil {
+		log.Printf(logPrefix+"failed to hash preimage, error: %v", err)
+		w.WriteHeader(http.StatusInternalServerError) // 500 Internal Server Error
+		return
+	}
+	paymentHashHex := hex.EncodeToString(paymentHash[:])
+
+	invoice, err := server.artServer.Invoice(&paymentHash)
+	if err != nil {
+		log.Printf(logPrefix+"invoice #%s for %s/%s not found, error: %v",
+			paymentHash, artistID, artistTrackID, err)
+		w.Header().Set(HttpHeaderPaymentHash, paymentHashHex)
+		w.WriteHeader(http.StatusNotFound) // 404 Not Found
+		return
+	}
+
+	track, err := server.artServer.Track(artistID, artistTrackID)
+	if err != nil {
+		// Requested track was not found
+		log.Printf(logPrefix+"failed to select track, error: %v", err)
+		w.WriteHeader(http.StatusNotFound) // 404 Not Found
+		w.Write([]byte(fmt.Sprintf("No such track: %s/%s", artistID, artistTrackID)))
+		return
+	}
+
+	// Validate that the paid invoice is for the requested track.
+	err = assertHasTrack(invoice, track)
+	if err != nil {
+		message := fmt.Sprintf("Invoice with payment hash %s is not for track %s/%s", paymentHashHex, artistID, artistTrackID)
+		log.Printf(logPrefix+"Forbidden: %s", message)
+		w.Header().Set(HttpHeaderPaymentHash, paymentHashHex)
+		w.WriteHeader(http.StatusForbidden) // 403 Forbidden
+		w.Write([]byte(message))
+		return
+	}
+
 	// If valid secret is not supplied, issue a Lightning invoice.
 	// For now, skip the payment mechanics and serve the requested resource immediately.
 	trackFilePath := server.artServer.TrackFilePath(track)
@@ -385,25 +444,26 @@ func (server *AustkServer) getArtHandler(w http.ResponseWriter, req *http.Reques
 	trackData, err := mp3.ReadBytes()
 	if err != nil {
 		log.Printf(logPrefix+"mp3.ReadBytes error: %v", err)
-		w.WriteHeader(http.StatusInternalServerError)
+		w.WriteHeader(http.StatusInternalServerError) // 500 Internal Server Error
 		return
 	}
+
 	log.Printf(logPrefix+"serving track as %d bytes of data", len(trackData))
-	w.WriteHeader(http.StatusOK)
+	w.WriteHeader(http.StatusOK) // 200 OK
 	w.Write(trackData)
 }
 
-func doesInvoiceHaveTrack(invoice *art.Invoice, track *art.Track) bool {
-	if invoice == nil {
-		return false
-	}
+// TODO: move to invoice.go
+//func (invoice *art.Invoice) assertHasTrack(track *art.Track) error {
+func assertHasTrack(invoice *art.Invoice, track *art.Track) error {
 	for _, invoiceTrack := range invoice.Tracks {
 		if track.ArtistId == invoiceTrack.ArtistId &&
 			track.ArtistTrackId == invoiceTrack.ArtistTrackId {
-			return true
+			// invoice has track with same id, no error
+			return nil
 		}
 	}
-	return false
+	return ErrArtNotFound
 }
 
 // getTrackInvoiceHandler handles requests to get a specified track by a specified artist.
@@ -419,17 +479,18 @@ func (server *AustkServer) getTrackInvoiceHandler(w http.ResponseWriter, req *ht
 		return
 	}
 
-	log.Printf(logPrefix+"artist: %s, track: %s", artistID, artistTrackID)
-
 	track, err := server.artServer.Track(artistID, artistTrackID)
 	if err != nil {
-		// TODO: if requested track isn't found, error with 404 Not Found
-		log.Printf(logPrefix+"failed to select track, error: %v", err)
-		w.WriteHeader(http.StatusInternalServerError)
+		log.Printf(logPrefix+"failed to get track %s/%s, error: %v",
+			artistID, artistTrackID, err)
+		w.WriteHeader(http.StatusNotFound) // 404 Not Found
 		return
 	}
 
 	trackFilePath := server.artServer.TrackFilePath(track)
+	log.Printf(logPrefix+"artist: %s, track: %s, path: %s",
+		artistID, artistTrackID, trackFilePath)
+
 	mp3, err := OpenMp3ToRead(trackFilePath)
 	if err != nil {
 		log.Printf(logPrefix+"OpenMp3ForTrackToRead %s %s, error: %v", artistID, artistTrackID, err)
@@ -446,23 +507,41 @@ func (server *AustkServer) getTrackInvoiceHandler(w http.ResponseWriter, req *ht
 	// Hash trackData to compose a Lightning invoice
 	// that commits to the track's metadata and its trackData hash.
 	trackHash := sha256.Sum256(trackData)
-	log.Printf(logPrefix+"invoice for track: %s, hash: %x...", trackFilePath, trackHash[0:32])
 	trackPath := filepath.Join(track.ArtistId, track.ArtistTrackId)
-	//issued, err := time.Now().UTC().MarshalJSON()
-	//if err != nil {
-	//	log.Printf(logPrefix + "Failed to marshal issued-time into invoice memo")
-	//	w.WriteHeader(http.StatusInternalServerError)
-	//	return
-	//}
-	//invoiceId := fmt.Sprintf("%s %x %s", issued, trackPath, trackHash)
-	trackInvoiceMemo := fmt.Sprintf("%s %x", trackPath, trackHash[0:32])
-	invoice, err := server.publisher.NewInvoice(&art.ArtResources{
-		Tracks: []*art.Track{track},
-	})
+	trackInvoiceMemo := fmt.Sprintf("%s#%x", trackPath, trackHash[0:32])
+	log.Printf(logPrefix+"invoice memo: %s", trackInvoiceMemo)
+	maxBitRateRequestVar := mux.Vars(req)["maxBitRate"]
+	var maxBitRateKbps int32
+	if maxBitRateRequestVar == "" {
+		maxBitRateKbps = 0
+	} else {
+		maxBitRateKbps64, err := strconv.ParseInt(maxBitRateRequestVar, 10, 32)
+		if err != nil {
+			log.Printf(logPrefix+"invalid parameter maxBitRate:\"%s\", error: %v",
+				maxBitRateRequestVar, err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		maxBitRateKbps = int32(maxBitRateKbps64)
+	}
+	// TODO: configure price in bits
+	priceInBits := int32(1)
+	trackForInvoice := *track
+	trackForInvoice.Presentations = make([]*art.TrackPresentation, 0, len(track.Presentations))
+	for _, presentation := range track.Presentations {
+		if maxBitRateKbps == 0 || presentation.BitRateKbps <= maxBitRateKbps {
+			trackForInvoice.Presentations = append(trackForInvoice.Presentations, presentation)
+		}
+	}
+
+	invoice, err := server.publisher.NewInvoice(
+		[]*art.Track{&trackForInvoice},
+		priceInBits, art.Bolt11AmountMultiplier_BITCOIN_BIT,
+	)
 	if err != nil {
 		log.Printf(logPrefix+"Failed to add lightning invoice for track memo: %s, error: %v",
 			trackInvoiceMemo, err)
-		w.WriteHeader(http.StatusInternalServerError)
+		w.WriteHeader(http.StatusInternalServerError) // 500 Internal Server Error
 		return
 	}
 
@@ -470,23 +549,18 @@ func (server *AustkServer) getTrackInvoiceHandler(w http.ResponseWriter, req *ht
 	err = server.artServer.StoreInvoice(invoice)
 	if err != nil {
 		log.Printf(logPrefix+"Failed to store invoice, error: %v", err)
-		w.WriteHeader(http.StatusInternalServerError)
+		w.WriteHeader(http.StatusInternalServerError) // 500 Internal Server error
 		return
 	}
-	// preimage := invoice.Preimage
-	// err = server.artServer.IndexInvoice(invoice, preimage)
-	// if err != nil {
-	// 	log.Printf(logPrefix+"Failed to index invoice, error: %v", err)
-	// }
-	log.Printf(logPrefix+"serving invoice for track as %d bytes of data", len(trackData))
+	log.Printf(logPrefix+"serving invoice: %v", invoice)
 
-	invoiceResponseBytes, err := proto.Marshal(invoice)
+	invoiceBytes, err := proto.Marshal(invoice)
 	if err != nil {
 		log.Printf(logPrefix+"Failed to send invoice, error: %v", err)
-		w.WriteHeader(http.StatusInternalServerError)
+		w.WriteHeader(http.StatusInternalServerError) // 500 Internal Server Error
 		return
 	}
 
-	w.Write(invoiceResponseBytes)
-	w.WriteHeader(http.StatusOK)
+	w.WriteHeader(http.StatusOK) // 200 OK
+	w.Write(invoiceBytes)
 }

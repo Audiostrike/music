@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io/ioutil"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -13,7 +14,6 @@ import (
 	"github.com/cretz/bine/tor"
 	"github.com/golang/protobuf/proto"
 	"google.golang.org/grpc"
-	"log"
 )
 
 type Client struct {
@@ -115,7 +115,7 @@ func (client *Client) storePublication(publication *art.ArtistPublication, local
 
 	client.publications[pubkey] = publication
 	client.resources[pubkey] = publishedResources
-	
+
 	return publishedResources, nil
 }
 
@@ -124,45 +124,31 @@ func (client *Client) storePublication(publication *art.ArtistPublication, local
 // The .mp3 file is written as `./tracks/{ArtistId}/{ArtistTrackId}.mp3`
 // That is, tracks download under an artist-specific subdirectory of ./tracks
 // with filenames from the track's ArtistTrackId.
-func (client *Client) DownloadTracks(tracks []*art.Track, localStorage ArtServer) (err error) {
-	const logPrefix = "client DownloadTracks "
-	var errors []error
-	for _, track := range tracks {
-		trackArtist, err := localStorage.Artist(track.ArtistId)
-		if err != nil {
-			errors = append(errors, err)
-			continue // to next track
-		}
+func (client *Client) DownloadTrack(track *art.Track, preimageString string, localStorage ArtServer) error {
+	const logPrefix = "(*Client) DownloadTrack "
 
-		peer, err := localStorage.Peer(trackArtist.Pubkey)
-		if peer == nil {
-			err = fmt.Errorf("no known peer owns pubkey %s for %s/%s.mp3",
-				trackArtist.Pubkey, track.ArtistId, track.ArtistTrackId)
-			errors = append(errors, err)
-			continue // to next track
-		}
-
-		replyBytes, err := client.GetTrack(track.ArtistId, track.ArtistTrackId)
-		if err != nil {
-			log.Printf(logPrefix+"Failed GetTrackByTor, error: %v", err)
-			errors = append(errors, err)
-			continue // to next track
-		}
-
-		err = localStorage.StoreTrackPayload(track, replyBytes)
-		if err != nil {
-			log.Printf(logPrefix+"Failed StoreTrackPayload, error: %v", err)
-			errors = append(errors, err)
-			continue // to next track
-		}
+	trackArtist, err := localStorage.Artist(track.ArtistId)
+	if err != nil {
+		return err
 	}
 
-	if len(errors) > 0 {
-		log.Printf(logPrefix+"%v errors:", len(errors))
-		for _, err = range errors {
-			log.Printf(logPrefix+"\terror: %v", err)
-		}
-		return errors[0] // return the first error
+	peer, err := localStorage.Peer(Pubkey(trackArtist.Pubkey))
+	if peer == nil {
+		err = fmt.Errorf("no known peer owns pubkey %s for %s/%s.mp3",
+			trackArtist.Pubkey, track.ArtistId, track.ArtistTrackId)
+		return err
+	}
+
+	replyBytes, err := client.GetTrack(track.ArtistId, track.ArtistTrackId, preimageString)
+	if err != nil {
+		log.Printf(logPrefix+"Failed GetTrackByTor, error: %v", err)
+		return err
+	}
+
+	err = localStorage.StoreTrackPayload(track, replyBytes)
+	if err != nil {
+		log.Printf(logPrefix+"Failed StoreTrackPayload, error: %v", err)
+		return err
 	}
 
 	return nil
@@ -207,15 +193,50 @@ func (client *Client) GetAllArtByTor() (*art.ArtistPublication, error) {
 	return &publication, nil
 }
 
+func (client *Client) GetInvoiceForTrack(track *art.Track) (*art.Invoice, error) {
+	const logPrefix = "(*Client) GetInvoiceForTrack "
+
+	invoiceUrl := fmt.Sprintf("http://%s/invoice/%s/%s",
+		client.peerAddress, track.ArtistId, track.ArtistTrackId)
+
+	response, err := client.torClient.Get(invoiceUrl)
+	if err != nil {
+		log.Printf(logPrefix+"failed to get invoice from %s, error: %v", invoiceUrl, err)
+		return nil, err
+	}
+	defer response.Body.Close()
+
+	// Read the reply and deserialize the invoice.
+	replyBytes, err := ioutil.ReadAll(response.Body)
+	log.Printf(logPrefix+"Read %d-byte reply", len(replyBytes))
+	if err != nil {
+		log.Printf(logPrefix+"ReadAll response.Body error: %v", err)
+		return nil, err
+	}
+	invoice := art.Invoice{}
+	err = proto.Unmarshal(replyBytes, &invoice)
+	if err != nil {
+		log.Printf(logPrefix+"Unmarshal invoice error: %v", err)
+		return nil, err
+	}
+	return &invoice, nil
+}
+
 // GetTrack gets the mp3 track (the bytes of the mp3 file) artistID/artistTrackID
 // from client's peer by http over tor .
-func (client *Client) GetTrack(artistID string, artistTrackID string) ([]byte, error) {
-	const logPrefix = "client GetTrackByTor "
+func (client *Client) GetTrack(artistID string, artistTrackID string, preimage string) ([]byte, error) {
+	const logPrefix = "(*Client) GetTrack "
 
 	trackUrl := fmt.Sprintf("http://%s/art/%s/%s",
 		client.peerAddress, artistID, artistTrackID)
 	log.Printf(logPrefix+"Get %s...", trackUrl)
-	response, err := client.torClient.Get(trackUrl)
+	//response, err := client.torClient.Get(trackUrl)
+	req, err := http.NewRequest("GET", trackUrl, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set(HttpHeaderPaymentPreimage, preimage)
+	response, err := client.torClient.Do(req)
 	if err != nil {
 		log.Printf(logPrefix+"torClient.get %v, error: %v", trackUrl, err)
 		return nil, err

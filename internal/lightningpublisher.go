@@ -10,12 +10,12 @@ import (
 	art "github.com/audiostrike/music/pkg/art"
 	"github.com/golang/protobuf/proto"
 	"github.com/lightningnetwork/lnd/lnrpc"
-	//"github.com/lightningnetwork/lnd/lnrpc/invoicesrpc"
 	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/lightningnetwork/lnd/macaroons"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"gopkg.in/macaroon.v2"
+	"strings"
 )
 
 type LightningPublisher struct {
@@ -23,7 +23,7 @@ type LightningPublisher struct {
 	publishingArtist *art.Artist
 }
 
-func NewLightningPublisher(cfg *Config, localStorage ArtServer) (*LightningPublisher, error) {
+func NewLightningPublisher(cfg *Config, publishingArtist *art.Artist) (*LightningPublisher, error) {
 	const logPrefix = "lightningPublisher NewLightningPublisher "
 
 	// Get the TLS credentials for the lnd server.
@@ -62,41 +62,6 @@ func NewLightningPublisher(cfg *Config, localStorage ArtServer) (*LightningPubli
 	lndClient := lnrpc.NewLightningClient(lndConn)
 
 	// Set the publishing Artist for this lightningPublisher with the configured ArtistID and Name.
-	if cfg.ArtistID == "" {
-		log.Fatalf(logPrefix + "No artist configured")
-		return nil, ErrArtNotFound
-	}
-	publishingArtist, err := localStorage.Artist(cfg.ArtistID)
-	if err == ErrArtNotFound {
-		pubkey, err := pubkey(lndClient)
-		if err != nil {
-			log.Fatalf(logPrefix+"failed to get pubkey from lnd %s, error: %v", lndGrpcEndpoint, err)
-			return nil, err
-		}
-		if cfg.Pubkey == "" {
-			cfg.Pubkey = string(pubkey)
-		} else if cfg.Pubkey != string(pubkey) {
-			log.Fatalf(logPrefix+"lnd %s has pubkey %s but artist %v configured pubkey %s",
-				lndGrpcEndpoint, pubkey, publishingArtist, cfg.Pubkey)
-			return nil, fmt.Errorf("misconfigured pubkey")
-		}
-		// The configured artist is not yet stored, so store the artist.
-		publishingArtist = &art.Artist{
-			ArtistId: cfg.ArtistID,
-			Name:     cfg.ArtistName,
-			Pubkey:   string(pubkey)}
-		err = localStorage.StoreArtist(publishingArtist)
-		if err != nil {
-			log.Fatalf(logPrefix+"failed to store artist %v, error: %v",
-				publishingArtist, err)
-			return nil, err
-		}
-		log.Printf(logPrefix+"stored %v", publishingArtist)
-	} else if err != nil {
-		log.Fatalf(logPrefix+"failed to get artist %s from storage, error: %v", cfg.ArtistID, err)
-		return nil, ErrArtNotFound
-	}
-
 	return &LightningPublisher{
 		lightningClient:  lndClient,
 		publishingArtist: publishingArtist,
@@ -183,24 +148,79 @@ func pubkey(lightningClient lnrpc.LightningClient) (Pubkey, error) {
 	return pubkey, nil
 }
 
-func (lightningPublisher *LightningPublisher) NewInvoice(artResources *art.ArtResources) (*art.Invoice, error) {
+func (lightningPublisher *LightningPublisher) NewInvoice(tracks []*art.Track, amount int32, amountUnits art.Bolt11AmountMultiplier) (*art.Invoice, error) {
 	const logPrefix = "(*LightningPublisher) Invoice "
 
 	ctx := context.Background()
-	lightningInvoice := lnrpc.Invoice{}
+	memo, err := invoiceMemo(tracks)
+	if err != nil {
+		log.Printf(logPrefix+"Failed to generate memo for invoice, error: %v", err)
+		return nil, err
+	}
+	valueSatoshis, err := valueSatoshis(amount, amountUnits)
+	if err != nil {
+		log.Printf(logPrefix+"failed to convert amount %d %s to satoshis, error: %v",
+			amount, amountUnits.String(), err)
+		return nil, err
+	}
+	lightningInvoice := lnrpc.Invoice{
+		Memo:  memo,
+		Value: valueSatoshis,
+	}
 	addInvoiceResponse, err := lightningPublisher.lightningClient.AddInvoice(ctx, &lightningInvoice)
 	if err != nil {
 		log.Printf(logPrefix+"Failed to add invoice: %v, error: %v", lightningInvoice, err)
 		return nil, err
 	}
 
-	invoice := art.Invoice{
-		// BOLT-11 encoded lightning invoice, e.g. "lnbc2u1..." for a 2µBTC invoice
-		Bolt11Invoice:        addInvoiceResponse.PaymentRequest,
-		LightningPaymentHash: addInvoiceResponse.RHash[:],
-		Tracks:               artResources.Tracks,
+	artist, err := lightningPublisher.Artist()
+	if err != nil {
+		log.Printf(logPrefix+"failed to get artist to issue invoice, error: %v", err)
+		return nil, err
 	}
-	return &invoice, fmt.Errorf("Invoice not implemented")
+	
+	return &art.Invoice{
+		ArtistId: artist.ArtistId,
+		// BOLT-11 encoded lightning invoice, e.g. "lnbc2u1..." for a 2µBTC invoice
+		Bolt11PaymentRequest:   addInvoiceResponse.PaymentRequest,
+		LightningPaymentHash:   addInvoiceResponse.RHash[:],
+		Tracks:                 tracks,
+		Bolt11Amount:           amount,
+		Bolt11AmountMultiplier: amountUnits,
+	}, nil
+}
+
+func invoiceMemo(tracks []*art.Track) (string, error) {
+	if len(tracks) == 0 {
+		return "", fmt.Errorf("no tracks for invoice")
+	}
+	// TODO: build this memo up to 1023 bytes. Any greater amount would need a memo hash.
+	ids := make([]string, 0, len(tracks))
+	for _, track := range tracks {
+		if len(track.Presentations) == 0 {
+			ids = append(ids, track.ArtistId+"/"+track.ArtistTrackId)
+			continue
+		}
+		for _, presentation := range track.Presentations {
+			if len(presentation.Segments) == 0 {
+				ids = append(ids, presentation.FullId)
+				continue
+			}
+			for _, segment := range presentation.Segments {
+				ids = append(ids, segment.FullId)
+			}
+		}
+	}
+	memo := strings.Join(ids, " ")
+	return memo, nil
+}
+
+func valueSatoshis(amount int32, amountUnits art.Bolt11AmountMultiplier) (int64, error) {
+	switch amountUnits {
+	case art.Bolt11AmountMultiplier_BITCOIN_BIT:
+		return int64(amount) * 100, nil
+	}
+	return 0, fmt.Errorf("valueSatoshis not implemented")
 }
 
 func (lightningPublisher *LightningPublisher) Invoice(paymentHash *lntypes.Hash) (*art.Invoice, error) {

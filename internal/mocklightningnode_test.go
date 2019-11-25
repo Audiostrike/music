@@ -1,7 +1,6 @@
 package audiostrike
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"fmt"
@@ -13,7 +12,7 @@ import (
 )
 
 const (
-	mockPubkey string = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef50"
+	mockPubkey Pubkey = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef50"
 )
 
 type MockLightningClient struct {
@@ -47,15 +46,12 @@ func (c MockLightningClient) NewAddress(ctx context.Context, in *lnrpc.NewAddres
 	return nil, fmt.Errorf("NewAddress not implemented")
 }
 func (c MockLightningClient) SignMessage(ctx context.Context, in *lnrpc.SignMessageRequest, opts ...grpc.CallOption) (*lnrpc.SignMessageResponse, error) {
-	hasher := sha256.New()
-	sum := hasher.Sum(in.Msg)
-	log.Printf("SignMessage msg: %v, sum: %x", in.Msg, sum)
-	//hash := sha256.Sum256(nil)
-	if bytes.Equal(sum, hasher.Sum([]byte("Test message to ensure lnd is operational"))) {
+	sum := sha256.Sum256(in.Msg)
+	if sum == sha256.Sum256([]byte("Test message to ensure lnd is operational")) {
 		return &lnrpc.SignMessageResponse{Signature: "test signature"}, nil
-	} else if bytes.Equal(sum, []byte{0x0a, 0x54, 0x0a, 0x0e, 0x61, 0x6c, 0x69, 0x63, 0x65, 0x74, 0x68, 0x65, 0x61, 0x72, 0x74, 0x69, 0x73, 0x74, 0x1a, 0x42, 0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x61, 0x62, 0x63, 0x64, 0x65, 0x66, 0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x61, 0x62, 0x63, 0x64, 0x65, 0x66, 0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x61, 0x62, 0x63, 0x64, 0x65, 0x66, 0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x61, 0x62, 0x63, 0x64, 0x65, 0x66, 0x35, 0x30, 0x1a, 0x1b, 0x0a, 0x0e, 0x61, 0x6c, 0x69, 0x63, 0x65, 0x74, 0x68, 0x65, 0x61, 0x72, 0x74, 0x69, 0x73, 0x74, 0x1a, 0x09, 0x74, 0x65, 0x73, 0x74, 0x74, 0x72, 0x61, 0x63, 0x6b, 0xe3, 0xb0, 0xc4, 0x42, 0x98, 0xfc, 0x1c, 0x14, 0x9a, 0xfb, 0xf4, 0xc8, 0x99, 0x6f, 0xb9, 0x24, 0x27, 0xae, 0x41, 0xe4, 0x64, 0x9b, 0x93, 0x4c, 0xa4, 0x95, 0x99, 0x1b, 0x78, 0x52, 0xb8, 0x55}) {
+	} else if sum == [32]byte{76, 26, 34, 184, 199, 139, 58, 86, 156, 230, 49, 148, 181, 191, 98, 208, 243, 101, 199, 217, 61, 32, 138, 199, 66, 142, 152, 52, 113, 203, 208, 171} {
 		return &lnrpc.SignMessageResponse{Signature: "test sig 2"}, nil
-	} else if bytes.Equal(sum, []byte{10, 84, 10, 14, 97, 108, 105, 99, 101, 116, 104, 101, 97, 114, 116, 105, 115, 116, 26, 66, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 97, 98, 99, 100, 101, 102, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 97, 98, 99, 100, 101, 102, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 97, 98, 99, 100, 101, 102, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 97, 98, 99, 100, 101, 102, 53, 48, 26, 27, 10, 14, 97, 108, 105, 99, 101, 116, 104, 101, 97, 114, 116, 105, 115, 116, 26, 9, 116, 101, 115, 116, 116, 114, 97, 99, 107, 34, 68, 10, 66, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 97, 98, 99, 100, 101, 102, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 97, 98, 99, 100, 101, 102, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 97, 98, 99, 100, 101, 102, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 97, 98, 99, 100, 101, 102, 53, 48, 227, 176, 196, 66, 152, 252, 28, 20, 154, 251, 244, 200, 153, 111, 185, 36, 39, 174, 65, 228, 100, 155, 147, 76, 164, 149, 153, 27, 120, 82, 184, 85}) {
+	} else if sum == [32]byte{15, 139, 163, 22, 5, 209, 7, 12, 64, 101, 25, 174, 93, 121, 62, 213, 222, 198, 26, 52, 168, 170, 125, 223, 215, 156, 74, 24, 188, 9, 88, 134} {
 		return &lnrpc.SignMessageResponse{Signature: "test sig 3"}, nil
 	}
 	return nil, fmt.Errorf("Mock lnd client does not implement SignMessage for input msg: %s (sum: %v)", string(in.Msg), sum)
@@ -76,7 +72,7 @@ func (c MockLightningClient) ListPeers(ctx context.Context, in *lnrpc.ListPeersR
 	return nil, fmt.Errorf("ListPeers not implemented")
 }
 func (c MockLightningClient) GetInfo(ctx context.Context, in *lnrpc.GetInfoRequest, opts ...grpc.CallOption) (*lnrpc.GetInfoResponse, error) {
-	return &lnrpc.GetInfoResponse{IdentityPubkey: mockPubkey}, nil
+	return &lnrpc.GetInfoResponse{IdentityPubkey: string(mockPubkey)}, nil
 }
 func (c MockLightningClient) PendingChannels(ctx context.Context, in *lnrpc.PendingChannelsRequest, opts ...grpc.CallOption) (*lnrpc.PendingChannelsResponse, error) {
 	return nil, fmt.Errorf("PendingChanels not implemented")
@@ -184,8 +180,13 @@ func (c MockLightningClient) SubscribeChannelBackups(ctx context.Context, in *ln
 	return nil, fmt.Errorf("SubscribeChannelBackups not implemented")
 }
 
-func NewMockLightningNode(cfg *Config, localStorage ArtServer) (*LightningNode, error) {
-	const logPrefix = "MockLightningNode NewMockLightningNode "
+func (c MockLightningClient) ChannelAcceptor(ctx context.Context, opts ...grpc.CallOption) (lnrpc.Lightning_ChannelAcceptorClient, error) {
+	return nil, fmt.Errorf("ChannelAcceptor not implemented")
+}
+
+
+func NewMockLightningPublisher(cfg *Config, localStorage ArtServer) (*LightningPublisher, error) {
+	const logPrefix = "NewMockLightningPublisher "
 
 	lndClient := MockLightningClient{}
 
@@ -205,7 +206,7 @@ func NewMockLightningNode(cfg *Config, localStorage ArtServer) (*LightningNode, 
 		return nil, ErrArtNotFound
 	}
 
-	return &LightningNode{
+	return &LightningPublisher{
 		lightningClient:  lndClient,
 		publishingArtist: publishingArtist,
 	}, nil
