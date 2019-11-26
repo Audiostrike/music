@@ -14,8 +14,8 @@ const (
 
 var mockArtist = art.Artist{
 	ArtistId: mockArtistID,
-	Name:     "Artist McTester",
-	Pubkey:   mockPubkey}
+	Name:     "Alice McTester",
+	Pubkey:   string(mockPubkey)}
 
 type MockPublisher struct{}
 
@@ -23,7 +23,7 @@ func (s *MockPublisher) Artist() (*art.Artist, error) {
 	return &mockArtist, nil
 }
 
-func (s *MockPublisher) Pubkey() (string, error) {
+func (s *MockPublisher) Pubkey() (Pubkey, error) {
 	return mockPubkey, nil
 }
 
@@ -142,7 +142,7 @@ func TestStoreTrack(t *testing.T) {
 			Title:            "Test Put 3"},
 	}
 	for _, testTrack := range testTracks {
-		err = fileServer.StoreTrack(&testTrack, &mockPublisher)
+		err = fileServer.StoreTrack(&testTrack)
 		if err != nil {
 			t.Errorf("Failed to store track %v, error: %v", testTrack, err)
 		}
@@ -173,7 +173,7 @@ func TestAlbumFiles(t *testing.T) {
 		ArtistAlbumId:    testAlbumId,
 		AlbumTrackNumber: 1,
 		ArtistTrackId:    testAlbumId + "-1.SomeTrack",
-		Title:            "Some Track"}, &mockPublisher)
+		Title:            "Some Track"})
 	if err != nil {
 		t.Errorf("StoreTrack failed  for %s/%s", testArtistId, testAlbumId)
 	}
@@ -202,7 +202,7 @@ func TestPeers(t *testing.T) {
 		t.Errorf("StoreArtist %v failed for publisher %v, error: %v", mockArtist, mockPublisher, err)
 	}
 
-	err = fileServer.StorePeer(&art.Peer{Pubkey: mockPubkey}, &mockPublisher)
+	err = fileServer.StorePeer(&art.Peer{Pubkey: string(mockPubkey)})
 	if err != nil {
 		t.Errorf("StorePeer failed for pubkey %s, error: %v", mockPubkey, err)
 	}
@@ -216,7 +216,7 @@ func TestPeers(t *testing.T) {
 	if fetchedPeer == nil {
 		t.Errorf("Peer failed to fetch for pubkey %s", mockPubkey)
 	}
-	if fetchedPeer.Pubkey != mockPubkey {
+	if Pubkey(fetchedPeer.Pubkey) != mockPubkey {
 		t.Errorf("Peer fetched had the wrong pubkey (%s), expected %s",
 			fetchedPeer.Pubkey, mockPubkey)
 	}

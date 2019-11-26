@@ -99,12 +99,10 @@ func defaultAppDir() string {
 }
 
 // LoadConfig reads each config value from command line or config file or defaults.
-func LoadConfig() (*Config, error) {
+func LoadConfig(userInputReader *bufio.Reader) (*Config, error) {
 	const logPrefix = "config LoadConfig "
 
 	cfg := getDefaultConfig()
-
-	userInputReader := bufio.NewReader(os.Stdin)
 
 	// Parse command line initially to define flags and check for an alternate config file.
 	// Then parse the config file, then override any settings with command-line args.

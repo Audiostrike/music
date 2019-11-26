@@ -3,20 +3,22 @@ package audiostrike
 import (
 	"bytes"
 	"fmt"
-	art "github.com/audiostrike/music/pkg/art"
-	"github.com/golang/protobuf/proto"
 	"io/ioutil"
 	"log"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	art "github.com/audiostrike/music/pkg/art"
+	"github.com/golang/protobuf/proto"
+	"github.com/lightningnetwork/lnd/lntypes"
 )
 
 type FileServer struct {
 	rootPath string
 	// peers indexed by pubkey
-	peers map[string]*art.Peer
+	peers map[Pubkey]*art.Peer
 	// artists indexed by ArtistId
 	artists map[string]*art.Artist
 	// albums indexed by ArtistId then by ArtistAlbumId
@@ -25,6 +27,8 @@ type FileServer struct {
 	tracks map[string]map[string]*art.Track
 	// tracks indexed by ArtistId then by ArtistAlbumId then by AlbumTrackNumber
 	albumTracks map[string]map[string]map[uint32]*art.Track
+	// invoices indexed by payment hash
+	invoices map[lntypes.Hash]*art.Invoice
 }
 
 const (
@@ -33,6 +37,16 @@ const (
 	simpleIDRegex = "[a-z0-9.-]+"
 	// hierarchyRegex selects a series of one or more simple IDs separated by slashes
 	hierarchyRegex = simpleIDRegex + "(?:/" + simpleIDRegex + ")*"
+	// lightningPaymentRequestRegex selects a BOLT-11 payment request, default to Regtest
+	lightningPaymentRequestNetworkMainnet = "lnbc"
+	lightningPaymentRequestNetworkRegtest = "lnbcrt"
+	lightningPaymentRequestUnitBit        = "u"
+	lightningPaymentRequestSeparator      = "1"
+	lightningPaymentRequestDataRegex      = "[023456789acdefghjklmnpqrstuvwxyz]+"
+	lightningPaymentRequestRegex          = lightningPaymentRequestNetworkRegtest +
+		"(?P<amount>[0-9]+" + lightningPaymentRequestUnitBit + ")?" +
+		lightningPaymentRequestSeparator +
+		lightningPaymentRequestDataRegex
 )
 
 var (
@@ -43,6 +57,7 @@ var (
 	artistTrackMp3Regexp *regexp.Regexp = regexp.MustCompile("^/(?P<ArtistID>" + simpleIDRegex + ")/(?P<ArtistTrackID>" + hierarchyRegex + ")[.]mp3$")
 	albumDirRegexp       *regexp.Regexp = regexp.MustCompile("^/(?P<ArtistID>" + simpleIDRegex + ")/(?P<album>" + hierarchyRegex + ")$")
 	albumFileRegexp      *regexp.Regexp = regexp.MustCompile("^/(?P<ArtistID>" + simpleIDRegex + ")/(?P<album>" + hierarchyRegex + ")/(?P<file>" + simpleIDRegex + ")$")
+	invoiceRegexp        *regexp.Regexp = regexp.MustCompile("^/(?P<ArtistID>" + simpleIDRegex + ")/(?P<lnPaymentRequest>" + lightningPaymentRequestRegex + ").invoice$")
 )
 
 // NewFileServer creates a new FileServer to save and serve art in sudirectories of artDirPath.
@@ -55,8 +70,8 @@ func NewFileServer(artDirPath string) (*FileServer, error) {
 		tracks:      make(map[string]map[string]*art.Track),
 		albums:      make(map[string]map[string]*art.Album),
 		albumTracks: make(map[string]map[string]map[uint32]*art.Track),
-		peers:       make(map[string]*art.Peer),
-	}
+		peers:       make(map[Pubkey]*art.Peer),
+		invoices:    make(map[lntypes.Hash]*art.Invoice)}
 
 	_ = os.MkdirAll(artDirPath, 0755)
 
@@ -144,20 +159,38 @@ func (fileServer *FileServer) readFile(prefixedPath string, fileInfo os.FileInfo
 
 	// if this is the .art file
 	if artistArtFileRegexp.MatchString(relativePath) {
-		artFileMatchGroups := artistArtFileRegexp.FindStringSubmatch(relativePath)
+		//artFileMatchGroups := artistArtFileRegexp.FindStringSubmatch(relativePath)
 		// This is the artist's .art file. Read its art records.
-		artFileArtistID := artFileMatchGroups[1]
-		if artFileArtistID != artistID { // sanity check
-			return fmt.Errorf("unexpected ArtistID %s in %s for artist %s",
-				artFileArtistID, prefixedPath, artistID)
-		}
-
+		// invoiceMatchGroups[1] is artistID
 		err := fileServer.readArtFile(artistID, prefixedPath)
 		if err != nil {
-			log.Fatalf("failed to read artist %s resources %s, error: %v", artistID, prefixedPath, err)
+			log.Fatalf(logPrefix+"failed to read artist %s resources %s, error: %v", artistID, prefixedPath, err)
 			return err
 		}
 
+		return nil
+	}
+
+	if invoiceRegexp.MatchString(relativePath) {
+		invoiceBytes, err := ioutil.ReadFile(prefixedPath)
+		if err != nil {
+			log.Printf(logPrefix+"failed to read %s, error: %v", prefixedPath, err)
+		}
+		invoice := art.Invoice{}
+		err = proto.Unmarshal(invoiceBytes, &invoice)
+		if err != nil {
+			log.Printf(logPrefix+"failed to read invoice %s, error: %v", prefixedPath, err)
+			return err
+		}
+
+		lnHash, err := lntypes.MakeHash(invoice.LightningPaymentHash)
+		if err != nil {
+			log.Printf(logPrefix+"failed to make hash, error: %v", err)
+			return err
+		}
+
+		// Index invoice by its payment hash
+		fileServer.invoices[lnHash] = &invoice
 		return nil
 	}
 
@@ -167,6 +200,7 @@ func (fileServer *FileServer) readFile(prefixedPath string, fileInfo os.FileInfo
 		// trackID may be simple identifier composed of letters, numbers, periods, and dashes,
 		// or it may optionally include album or other slash-separated hierarchy.
 		// Optionally order tracks and albums with numeric prefixes.
+		// invoiceMatchGroups[1] is artistID
 		trackID := artistTrackMp3MatchGroups[2]
 		track, err := fileServer.Track(artistID, trackID)
 		if err != nil {
@@ -367,7 +401,7 @@ func (fileServer *FileServer) indexResources(resources *art.ArtResources) error 
 	}
 
 	for _, peer := range resources.Peers {
-		fileServer.peers[peer.Pubkey] = peer
+		fileServer.peers[Pubkey(peer.Pubkey)] = peer
 	}
 
 	return nil
@@ -388,25 +422,13 @@ func (fileServer *FileServer) StoreArtist(artist *art.Artist) error {
 	return nil
 }
 
-func (fileServer *FileServer) StoreAlbum(album *art.Album, publisher Publisher) error {
+func (fileServer *FileServer) StoreAlbum(album *art.Album) error {
 	const logPrefix = "FileServer StoreAlbum "
-
-	publishingArtist, err := publisher.Artist()
-	if err != nil {
-		log.Fatalf(logPrefix+"failed to get Artist for publisher %v, error: %v", publisher, err)
-		return err
-	}
 
 	albumArtist, err := fileServer.Artist(album.ArtistId)
 	if err != nil {
 		log.Fatalf(logPrefix+"failed to get artist %s for album %v, error: %v",
 			album.ArtistId, album, err)
-		return err
-	}
-
-	if publishingArtist.Pubkey != albumArtist.Pubkey {
-		log.Printf(logPrefix+"skip StoreAlbum %v because publishing pubkey %v does not match album artist pubkey %s, error: %v",
-			album, publishingArtist.Pubkey, albumArtist.Pubkey, err)
 		return err
 	}
 
@@ -421,33 +443,20 @@ func (fileServer *FileServer) StoreAlbum(album *art.Album, publisher Publisher) 
 	}
 
 	artistAlbums[album.ArtistAlbumId] = album
-	log.Printf(logPrefix+"stored album %v for publishing artist %v", album, publishingArtist)
+	log.Printf(logPrefix+"stored album %v for artist %v", album, albumArtist)
 
 	return nil
 }
 
 // StorePeer stores the peer in the in-memory database.
-func (fileServer *FileServer) StorePeer(peer *art.Peer, publisher Publisher) error {
+func (fileServer *FileServer) StorePeer(peer *art.Peer) error {
 	const logPrefix = "FileServer StorePeer "
 
-	publishingArtist, err := publisher.Artist()
-	if err != nil {
-		log.Fatalf(logPrefix+"failed to get Artist for publisher %v, error: %v", publisher, err)
-		return err
-	}
-
-	log.Printf("FileServer StorePeer %v for publishing artist %v", peer, publishingArtist)
-	if publishingArtist.Pubkey == peer.Pubkey {
-		fileServer.peers[peer.Pubkey] = peer
-	} else {
-		log.Printf(logPrefix+"skip StorePeer %v because pubkey does not match artist %v, error: %v",
-			peer, publishingArtist, err)
-		return err
-	}
+	fileServer.peers[Pubkey(peer.Pubkey)] = peer
 	return nil
 }
 
-func (fileServer *FileServer) Peer(pubkey string) (*art.Peer, error) {
+func (fileServer *FileServer) Peer(pubkey Pubkey) (*art.Peer, error) {
 	peer := fileServer.peers[pubkey]
 	if peer == nil {
 		return nil, ErrPeerNotFound
@@ -455,13 +464,13 @@ func (fileServer *FileServer) Peer(pubkey string) (*art.Peer, error) {
 	return peer, nil
 }
 
-func (fileServer *FileServer) Peers() (map[string]*art.Peer, error) {
+func (fileServer *FileServer) Peers() (map[Pubkey]*art.Peer, error) {
 	return fileServer.peers, nil
 }
 
 // StoreTrack stores track metadata in the in-memory database.
-func (fileServer *FileServer) StoreTrack(track *art.Track, publisher Publisher) error {
-	const logPrefix = "FileServer StoreTrack "
+func (fileServer *FileServer) StoreTrack(track *art.Track) error {
+	const logPrefix = "(*FileServer) StoreTrack "
 
 	tracksForArtist := fileServer.tracks[track.ArtistId]
 	if tracksForArtist == nil {
@@ -511,6 +520,36 @@ func (fileServer *FileServer) TrackFilePath(track *art.Track) string {
 	return fileServer.mp3Filename(track)
 }
 
+func (fileServer *FileServer) StoreInvoice(invoice *art.Invoice) error {
+	// TODO: validate the invoice with respect to publisher's artist and pubkey
+	paymentHash, err := lntypes.MakeHash(invoice.LightningPaymentHash)
+	if err != nil {
+		return err
+	}
+	fileServer.invoices[paymentHash] = invoice
+	filename := fileServer.invoiceFilename(invoice)
+	invoiceBytes, err := proto.Marshal(invoice)
+	if err != nil {
+		return err
+	}
+	err = ioutil.WriteFile(filename, invoiceBytes, 0644)
+	if err != nil {
+		log.Printf("failed to store invoice to %s, error: %v", filename, err)
+		return err
+	}
+	log.Printf("(*FileServer) StoreInvoice stored invoice to %s", filename)
+	return err
+}
+
+func (fileServer *FileServer) Invoice(paymentHash *lntypes.Hash) (*art.Invoice, error) {
+	invoice, found := fileServer.invoices[*paymentHash]
+	if found {
+		return invoice, nil
+	} else {
+		return nil, ErrInvoiceNotFound
+	}
+}
+
 func (fileServer *FileServer) artPath(artist *art.Artist) string {
 	return filepath.Join(fileServer.rootPath, artist.ArtistId, ".art")
 }
@@ -529,4 +568,8 @@ func (fileServer *FileServer) publicationPath(artist *art.Artist) string {
 func (fileServer *FileServer) mp3Filename(track *art.Track) (filename string) {
 	// TODO: sanitize filepath so peer cannot write outside the base path dir sandbox.
 	return filepath.Join(fileServer.rootPath, track.ArtistId, track.ArtistTrackId+".mp3")
+}
+
+func (fileServer *FileServer) invoiceFilename(invoice *art.Invoice) (filename string) {
+	return filepath.Join(fileServer.rootPath, invoice.ArtistId, invoice.Bolt11PaymentRequest+".invoice")
 }

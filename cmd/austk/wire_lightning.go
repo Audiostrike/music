@@ -12,11 +12,11 @@ import (
 	"github.com/google/wire"
 )
 
-func injectLightningNode(cfg *audiostrike.Config, artServer audiostrike.ArtServer) (p audiostrike.Publisher, e error) {
-	wire.Build(audiostrike.NewLightningNode, useLightningNode)
+func injectLightningPublisher(cfg *audiostrike.Config, artServer audiostrike.ArtServer) (p audiostrike.Publisher, e error) {
+	wire.Build(audiostrike.NewLightningPublisher, publishAsConfigArtist, useLightningPublisher)
 	return
 }
 
-func useLightningNode(lightningNode *audiostrike.LightningNode) audiostrike.Publisher {
-	return lightningNode
+func useLightningPublisher(lightningPublisher *audiostrike.LightningPublisher) audiostrike.Publisher {
+	return lightningPublisher
 }

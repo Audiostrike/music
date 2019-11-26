@@ -4,25 +4,27 @@ import (
 	"context"
 	"fmt"
 	"io/ioutil"
+	"log"
+	"os/user"
 
 	art "github.com/audiostrike/music/pkg/art"
 	"github.com/golang/protobuf/proto"
 	"github.com/lightningnetwork/lnd/lnrpc"
+	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/lightningnetwork/lnd/macaroons"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"gopkg.in/macaroon.v2"
-	"log"
-	"os/user"
+	"strings"
 )
 
-type LightningNode struct {
+type LightningPublisher struct {
 	lightningClient  lnrpc.LightningClient
 	publishingArtist *art.Artist
 }
 
-func NewLightningNode(cfg *Config, localStorage ArtServer) (*LightningNode, error) {
-	const logPrefix = "lightningNode NewLightningNode "
+func NewLightningPublisher(cfg *Config, publishingArtist *art.Artist) (*LightningPublisher, error) {
+	const logPrefix = "lightningPublisher NewLightningPublisher "
 
 	// Get the TLS credentials for the lnd server.
 	tlsCertFilePath, err := tlsCertPath(cfg)
@@ -59,52 +61,20 @@ func NewLightningNode(cfg *Config, localStorage ArtServer) (*LightningNode, erro
 	}
 	lndClient := lnrpc.NewLightningClient(lndConn)
 
-	// Set the publishing Artist for this lightningNode with the configured ArtistID and Name.
-	if cfg.ArtistID == "" {
-		log.Fatalf(logPrefix + "No artist configured")
-		return nil, ErrArtNotFound
-	}
-	publishingArtist, err := localStorage.Artist(cfg.ArtistID)
-	if err == ErrArtNotFound {
-		pubkey, err := pubkey(lndClient)
-		if err != nil {
-			log.Fatalf(logPrefix+"failed to get pubkey from lnd %s, error: %v", lndGrpcEndpoint, err)
-			return nil, err
-		}
-		if cfg.Pubkey == "" {
-			cfg.Pubkey = pubkey
-		} else if cfg.Pubkey != pubkey {
-			log.Fatalf(logPrefix+"lnd %s has pubkey %s but artist %v configured pubkey %s",
-				lndGrpcEndpoint, pubkey, publishingArtist, cfg.Pubkey)
-			return nil, fmt.Errorf("misconfigured pubkey")
-		}
-		// The configured artist is not yet stored, so store the artist.
-		publishingArtist = &art.Artist{ArtistId: cfg.ArtistID, Name: cfg.ArtistName, Pubkey: pubkey}
-		err = localStorage.StoreArtist(publishingArtist)
-		if err != nil {
-			log.Fatalf(logPrefix+"failed to store artist %v, error: %v",
-				publishingArtist, err)
-			return nil, err
-		}
-		log.Printf(logPrefix+"stored %v", publishingArtist)
-	} else if err != nil {
-		log.Fatalf(logPrefix+"failed to get artist %s from storage, error: %v", cfg.ArtistID, err)
-		return nil, ErrArtNotFound
-	}
-
-	return &LightningNode{
+	// Set the publishing Artist for this lightningPublisher with the configured ArtistID and Name.
+	return &LightningPublisher{
 		lightningClient:  lndClient,
 		publishingArtist: publishingArtist,
 	}, nil
 }
 
-func (lightningNode *LightningNode) Artist() (*art.Artist, error) {
-	return lightningNode.publishingArtist, nil
+func (lightningPublisher *LightningPublisher) Artist() (*art.Artist, error) {
+	return lightningPublisher.publishingArtist, nil
 }
 
 // getAllArtHandler handles a request to get all the art from the ArtService.
-func (lightningNode *LightningNode) Sign(resources *art.ArtResources) (*art.ArtistPublication, error) {
-	const logPrefix = "lightning Sign "
+func (lightningPublisher *LightningPublisher) Publish(resources *art.ArtResources) (*art.ArtistPublication, error) {
+	const logPrefix = "(*LightningPublisher) Publish "
 
 	ctx := context.Background()
 	marshaledResources, err := proto.Marshal(resources)
@@ -113,7 +83,7 @@ func (lightningNode *LightningNode) Sign(resources *art.ArtResources) (*art.Arti
 		return nil, err
 	}
 	signMessageInput := lnrpc.SignMessageRequest{Msg: marshaledResources}
-	signMessageResult, err := lightningNode.lightningClient.SignMessage(ctx, &signMessageInput)
+	signMessageResult, err := lightningPublisher.lightningClient.SignMessage(ctx, &signMessageInput)
 	if err != nil {
 		log.Printf(logPrefix+"SignMessage error: %v", err)
 		return nil, err
@@ -122,21 +92,21 @@ func (lightningNode *LightningNode) Sign(resources *art.ArtResources) (*art.Arti
 	log.Printf(logPrefix+"Signed message %v, signature: %v", resources, publicationSignature)
 
 	return &art.ArtistPublication{
-		Artist:                 lightningNode.publishingArtist,
+		Artist:                 lightningPublisher.publishingArtist,
 		Signature:              publicationSignature,
 		SerializedArtResources: marshaledResources,
 	}, nil
 }
 
-func (lightningNode *LightningNode) ValidatePublication(publication *art.ArtistPublication) (*art.ArtResources, error) {
-	const logPrefix = "lightningNode ValidatePublication "
+func (lightningPublisher *LightningPublisher) ValidatePublication(publication *art.ArtistPublication) (*art.ArtResources, error) {
+	const logPrefix = "lightningPublisher ValidatePublication "
 
 	ctx := context.Background()
 	verifyMessageRequest := lnrpc.VerifyMessageRequest{
 		Msg:       publication.SerializedArtResources,
 		Signature: publication.Signature,
 	}
-	verifyMessageResponse, err := lightningNode.lightningClient.VerifyMessage(ctx, &verifyMessageRequest)
+	verifyMessageResponse, err := lightningPublisher.lightningClient.VerifyMessage(ctx, &verifyMessageRequest)
 	if err != nil {
 		log.Printf(logPrefix+"failed to verify message, error: %v", err)
 		return nil, err
@@ -162,20 +132,99 @@ func (lightningNode *LightningNode) ValidatePublication(publication *art.ArtistP
 
 // Pubkey returns the pubkey for the lnd server,
 // which clients can use to authenticate publications from this node.
-func (lightningNode *LightningNode) Pubkey() (string, error) {
-	return pubkey(lightningNode.lightningClient)
+func (lightningPublisher *LightningPublisher) Pubkey() (Pubkey, error) {
+	return pubkey(lightningPublisher.lightningClient)
 }
 
-func pubkey(lightningClient lnrpc.LightningClient) (string, error) {
+func pubkey(lightningClient lnrpc.LightningClient) (Pubkey, error) {
 	ctx := context.Background()
 	getInfoRequest := lnrpc.GetInfoRequest{}
 	getInfoResponse, err := lightningClient.GetInfo(ctx, &getInfoRequest)
 	if err != nil {
 		return "", err
 	}
-	pubkey := getInfoResponse.IdentityPubkey
+	pubkey := Pubkey(getInfoResponse.IdentityPubkey)
 
 	return pubkey, nil
+}
+
+func (lightningPublisher *LightningPublisher) NewInvoice(tracks []*art.Track, amount int32, amountUnits art.Bolt11AmountMultiplier) (*art.Invoice, error) {
+	const logPrefix = "(*LightningPublisher) Invoice "
+
+	ctx := context.Background()
+	memo, err := invoiceMemo(tracks)
+	if err != nil {
+		log.Printf(logPrefix+"Failed to generate memo for invoice, error: %v", err)
+		return nil, err
+	}
+	valueSatoshis, err := valueSatoshis(amount, amountUnits)
+	if err != nil {
+		log.Printf(logPrefix+"failed to convert amount %d %s to satoshis, error: %v",
+			amount, amountUnits.String(), err)
+		return nil, err
+	}
+	lightningInvoice := lnrpc.Invoice{
+		Memo:  memo,
+		Value: valueSatoshis,
+	}
+	addInvoiceResponse, err := lightningPublisher.lightningClient.AddInvoice(ctx, &lightningInvoice)
+	if err != nil {
+		log.Printf(logPrefix+"Failed to add invoice: %v, error: %v", lightningInvoice, err)
+		return nil, err
+	}
+
+	artist, err := lightningPublisher.Artist()
+	if err != nil {
+		log.Printf(logPrefix+"failed to get artist to issue invoice, error: %v", err)
+		return nil, err
+	}
+	
+	return &art.Invoice{
+		ArtistId: artist.ArtistId,
+		// BOLT-11 encoded lightning invoice, e.g. "lnbc2u1..." for a 2µBTC invoice
+		Bolt11PaymentRequest:   addInvoiceResponse.PaymentRequest,
+		LightningPaymentHash:   addInvoiceResponse.RHash[:],
+		Tracks:                 tracks,
+		Bolt11Amount:           amount,
+		Bolt11AmountMultiplier: amountUnits,
+	}, nil
+}
+
+func invoiceMemo(tracks []*art.Track) (string, error) {
+	if len(tracks) == 0 {
+		return "", fmt.Errorf("no tracks for invoice")
+	}
+	// TODO: build this memo up to 1023 bytes. Any greater amount would need a memo hash.
+	ids := make([]string, 0, len(tracks))
+	for _, track := range tracks {
+		if len(track.Presentations) == 0 {
+			ids = append(ids, track.ArtistId+"/"+track.ArtistTrackId)
+			continue
+		}
+		for _, presentation := range track.Presentations {
+			if len(presentation.Segments) == 0 {
+				ids = append(ids, presentation.FullId)
+				continue
+			}
+			for _, segment := range presentation.Segments {
+				ids = append(ids, segment.FullId)
+			}
+		}
+	}
+	memo := strings.Join(ids, " ")
+	return memo, nil
+}
+
+func valueSatoshis(amount int32, amountUnits art.Bolt11AmountMultiplier) (int64, error) {
+	switch amountUnits {
+	case art.Bolt11AmountMultiplier_BITCOIN_BIT:
+		return int64(amount) * 100, nil
+	}
+	return 0, fmt.Errorf("valueSatoshis not implemented")
+}
+
+func (lightningPublisher *LightningPublisher) Invoice(paymentHash *lntypes.Hash) (*art.Invoice, error) {
+	return nil, fmt.Errorf("LightningPublisher Invoice retrieval not implemented")
 }
 
 // tlsCertPath gets the TlsCertPath from the given Config.
